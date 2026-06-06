@@ -1,0 +1,100 @@
+services:
+  # === PostgreSQL ===
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-hh_analyser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-hh_analyser}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-hh_analyser}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - hh-net
+
+  # === Alembic Migrations (one-shot) ===
+  migrations:
+    build:
+      context: ./backend
+    working_dir: /app
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hh_analyser}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-hh_analyser}
+    depends_on:
+      db:
+        condition: service_healthy
+    networks:
+      - hh-net
+
+  # === FastAPI Backend ===
+  api:
+    build:
+      context: ./backend
+    ports:
+      - "8000:8000"
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hh_analyser}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-hh_analyser}
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173","http://localhost:3000","http://localhost:80"]}
+      API_KEY: ${API_KEY:-}
+      LLM_BASE_URL: ${LLM_BASE_URL:-https://api-copilot.x5.ru/aigw/v1/}
+      LLM_MODEL: ${LLM_MODEL:-x5-airun-medium}
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - hh-net
+
+  # === Scheduler (APScheduler worker) ===
+  scheduler:
+    build:
+      context: ./backend
+    command: ["python", "-m", "app.scheduler.main"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-hh_analyser}:${POSTGRES_PASSWORD:-changeme}@db:5432/${POSTGRES_DB:-hh_analyser}
+      APP_ENV: ${APP_ENV:-development}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      API_KEY: ${API_KEY:-}
+      SCHEDULER_CRON_HOUR: ${SCHEDULER_CRON_HOUR:-3}
+      SCHEDULER_CRON_MINUTE: ${SCHEDULER_CRON_MINUTE:-0}
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    restart: unless-stopped
+    networks:
+      - hh-net
+
+  # === Frontend (Vite dev server in dev, nginx in prod) ===
+  frontend:
+    build:
+      context: ./frontend
+      target: build
+    ports:
+      - "5173:5173"
+    environment:
+      VITE_API_URL: http://localhost:8000
+    volumes:
+      - ./frontend/src:/app/src
+      - ./frontend/public:/app/public
+      - ./frontend/index.html:/app/index.html
+    command: ["npm", "run", "dev", "--", "--host", "0.0.0.0"]
+    depends_on:
+      - api
+    networks:
+      - hh-net
+
+volumes:
+  pgdata:
+
+networks:
+  hh-net:
+    driver: bridge
