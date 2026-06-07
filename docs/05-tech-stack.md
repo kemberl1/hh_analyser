@@ -2,6 +2,8 @@
 
 > Утверждённые заказчиком решения **зафиксированы** и не меняются; ниже — уточнение конкретными библиотеками, версиями и обоснованием.
 > Принцип: использовать готовые проверенные библиотеки вместо самописных реализаций (для скорости разработки).
+>
+> **Статус:** финальный стек реализованного MVP. Pinned-версии — в [`backend/requirements.txt`](../backend/requirements.txt) и [`frontend/package.json`](../frontend/package.json).
 
 ---
 
@@ -22,8 +24,11 @@
 | Retry / backoff | **tenacity** | устойчивость сети и краулинга (ретраи, backoff, jitter) | выбрано |
 | Rate-limiting (исходящий) | **aiolimiter** | ограничение RPS и вежливый краулинг hh.ru | выбрано |
 | Планировщик | **APScheduler** | ежедневный CRON | выбрано (альтернатива — системный cron) |
-| Числовые расчёты | **numpy** (+ при необходимости **pandas**) | перцентили, агрегации | выбрано |
-| LLM SDK | **openai** (Python) | клиент к X5 CoPilot API | выбрано (OpenAI-совместимый) |
+| Числовые расчёты | **numpy** | перцентили, агрегации (M1) | реализовано |
+| LLM SDK | **openai** (Python, `AsyncOpenAI`) | клиент к X5 CoPilot API | реализовано (OpenAI-совместимый) |
+| Парсинг резюме PDF | **pdfplumber** | извлечение текста из PDF-резюме (Phase 7) | реализовано |
+| Парсинг резюме DOCX | **python-docx** | извлечение текста из DOCX-резюме (Phase 7) | реализовано |
+| Multipart-формы | **python-multipart** | загрузка файлов резюме (multipart/form-data) | реализовано |
 | Логирование | **structlog** | структурные JSON-логи | выбрано |
 | Тесты | **pytest** + **pytest-asyncio** + **respx** | юнит/интеграционные | выбрано |
 | Линт/формат | **ruff** + **black** | качество кода | выбрано |
@@ -71,79 +76,68 @@
 
 Конфигурация — через `.env` (NFR-22). Backend и scheduler используют один образ, разные entrypoint.
 
-## 5. LLM-интеграция: X5 CoPilot API (Phase 6–7)
+## 5. LLM-интеграция: X5 CoPilot API (Phase 6–7 — реализовано)
 
 > Источник: [`CopilotAPI.pdf`](../CopilotAPI.pdf) (прочитан). Ключ доступа — в `.env` → `API_KEY`.
+> **Статус:** реализовано и **подтверждено live** под реальным токеном (`GET /models`).
 
-### 5.1. Базовые параметры (из документации)
+### 5.1. Базовые параметры (фактические)
 
 | Параметр | Значение |
 |----------|----------|
-| Протокол | **OpenAI-совместимый** (можно использовать SDK `openai`) |
-| Base URL (CoPilot API 2.0) | `https://api-copilot.x5.ru/aigw/v1/` |
-| Base URL (альт., CoPilot API) | `https://api-copilot.x5.ru/v1/` |
+| Протокол | **OpenAI-совместимый** (SDK `openai`, `AsyncOpenAI`) |
+| Base URL (CoPilot API 2.0) | `https://api-copilot.x5.ru/aigw/v1/` — **используется** (`LLM_BASE_URL`) |
 | Аутентификация | заголовок `Authorization: Bearer <API_KEY>` |
 | Chat | `POST /chat/completions` |
 | Embeddings | `POST /embeddings` |
 | Список моделей | `GET /models` |
-| Транскрипция аудио | `POST /audio/transcriptions` |
-| Возможности | tool-calling (OpenAI-формат), streaming |
+| TLS | внутренний корпоративный CA X5 → `LLM_CA_BUNDLE` (PEM), верификация ВКЛ (NFR-32) |
 
-### 5.2. Доступные модели (по документации)
+### 5.2. Доступные модели (подтверждено live)
 
-| Модель | Назначение | Контекст |
-|--------|------------|----------|
-| `x5-airun-large` | крупная (DeepSeek V4 Flash), анализ/научные тексты | 131 072 |
-| `x5-airun-medium` | Qwen3.6-27B, **адаптирована под русский**, сложные задачи | 65 536 |
-| `x5-airun-small` | размышляющая, простые задачи, чат-боты | 65 536 |
-| `x5-airun-multilingual-e5-large` | **embeddings** (поиск, семантическое сходство) | 512 |
-| `x5-airun-embed-4b` | **embeddings** (Qwen3-Embedding-4B), поиск/ранжирование | 2560 |
+| Модель | Назначение | Статус |
+|--------|------------|--------|
+| `x5-airun-medium` | чат, **адаптирована под русский** | ✅ используется для инсайтов/резюме; доступность подтверждена live |
+| `x5-airun-embed-4b` | **embeddings** (Qwen3-Embedding-4B) | ✅ доступность подтверждена live |
+| `x5-airun-large` | крупная, анализ/научные тексты | по документации (в MVP не используется) |
+| `x5-airun-small` | простые задачи, чат-боты | по документации (в MVP не используется) |
+| `x5-airun-multilingual-e5-large` | embeddings (e5) | по документации (в MVP не используется) |
 
-**Рекомендации проекта:**
-- Phase 6 (анализ рынка, русскоязычные инсайты) → `x5-airun-medium` (баланс качества и русского языка), при необходимости глубины → `x5-airun-large`.
-- Phase 7 (сопоставление резюме с рынком через embeddings) → `x5-airun-embed-4b` или `x5-airun-multilingual-e5-large`; генерация рекомендаций → `x5-airun-medium`.
+**Фактический выбор:**
+- Phase 6 (анализ рынка, русскоязычные инсайты) → `x5-airun-medium` (`LLM_MODEL` по умолчанию).
+- Phase 7 (анализатор резюме) → чат `x5-airun-medium`; embeddings-модель `x5-airun-embed-4b` подтверждена доступной (в MVP сопоставление навыков — rule-based на агрегациях).
 
-### 5.3. Абстрактный LLM-adapter (NFR-28, FR-34)
+### 5.3. Абстрактный LLM-adapter (NFR-28, FR-34 — реализовано)
 
-Несмотря на то, что провайдер известен, доступ к LLM проектируется через интерфейс, чтобы провайдер оставался **заменяемым**:
+Доступ к LLM реализован через интерфейс, чтобы провайдер оставался **заменяемым**:
 
 ```mermaid
 flowchart LR
-    BL[Бизнес логика Phase 6 7] --> IFACE[Интерфейс LLMClient chat embeddings]
-    IFACE --> IMPL[X5CopilotClient на openai SDK]
-    IMPL --> API[X5 CoPilot API base_url Bearer API_KEY]
-    IFACE -. потенциально .-> ALT[Другой провайдер в будущем]
+    BL[Бизнес логика insights resume] --> FACT[Фабрика get_llm_client LLM_ENABLED]
+    FACT --> IFACE[Интерфейс LLMClient chat embeddings]
+    IFACE --> IMPL[X5CopilotClient на openai AsyncOpenAI]
+    IMPL --> HTTP[httpx AsyncClient с LLM_CA_BUNDLE TLS verify ON]
+    HTTP --> API[X5 CoPilot API base_url Bearer API_KEY]
+    FACT -. LLM выключен .-> NONE[None graceful degradation]
 ```
 
-Контракт интерфейса (концептуально):
-- `chat(messages, model, **params) -> str` — генерация текста/инсайтов.
+Контракт интерфейса (фактический):
+- `chat(messages, model, **params) -> LLMResponse` — генерация текста/инсайтов.
 - `embeddings(texts, model) -> list[vector]` — векторизация для сопоставления.
-- Конфигурация (`base_url`, `api_key`, `model`) — из env через pydantic-settings.
+- Конфигурация (`base_url`, `api_key`, `model`, `LLM_CA_BUNDLE`, тайм-ауты, ретраи) — из env через pydantic-settings.
+- **Фабрика** `get_llm_client()` возвращает `None`, если `LLM_ENABLED=false` или нет `API_KEY` → бизнес-логика переходит в graceful-degradation.
+- Ретраи через **tenacity** (429/5xx/timeout — backoff + jitter); auth-ошибки (401/403) не ретраятся. `API_KEY` не логируется (NFR-17).
 
-Пример инициализации (концептуально, OpenAI SDK):
+**TLS CA-bundle (NFR-32):** X5 CoPilot за внутренним корпоративным CA (sre-vault.x5.ru), отсутствующим в публичном `certifi`. При заданном `LLM_CA_BUNDLE` создаётся кастомный `httpx.AsyncClient(verify=ssl.create_default_context(cafile=...))`, передаваемый в `AsyncOpenAI`; **верификация TLS остаётся включённой**. Сертификат — `backend/certs/x5_root_ca.pem` (в `.gitignore`; в проде — секреты K8s).
 
-```python
-from openai import OpenAI
-client = OpenAI(
-    base_url="https://api-copilot.x5.ru/aigw/v1/",
-    api_key=settings.API_KEY,
-)
-resp = client.chat.completions.create(
-    model="x5-airun-medium",
-    messages=[{"role": "user", "content": "..."}],
-)
-```
+### 5.4. Открытые вопросы по LLM — ЗАКРЫТЫ (Phase 6)
 
-### 5.4. Открытые вопросы по LLM (уточнить на Phase 6)
+- ✅ **Доступность моделей** для нашего токена: `x5-airun-medium` и `x5-airun-embed-4b` подтверждены live через `GET /models`.
+- ✅ **Base URL / тип интеграции:** используется `https://api-copilot.x5.ru/aigw/v1/` (CoPilot API 2.0), доступ подтверждён под реальным токеном.
+- ✅ **Политика передачи данных резюме** (NFR-16): реализована санитизация PII до вызова LLM (email, телефоны, URL, соцсети, ФИО в любом порядке, дата рождения, адрес, паспорт/СНИЛС/ИНН); в инсайты рынка подаются только обезличенные агрегаты.
+- ✅ **TLS:** решена проблема внутреннего CA через `LLM_CA_BUNDLE` без отключения верификации (NFR-32).
+- **streaming / tool-calling** — для сценариев MVP не требовались (базовый chat достаточен); остаются доступны при необходимости.
 
-- **Точные лимиты/квоты** запросов и токенов для нашего ключа (`GET /api_key/info`).
-- **Доступность конкретных моделей** для нашего токена (`GET /models` — состав зависит от способа интеграции).
-- **Тип интеграции** (частное лицо vs клиентская система) и соответствующий Base URL.
-- **Политика передачи данных резюме** во внешний LLM (см. NFR-16): требуется санитизация PII перед отправкой; подтвердить допустимость на этапе реализации Phase 7.
-- Необходимость **streaming** и **tool-calling** для наших сценариев (вероятно, базовый chat достаточно для Phase 6).
+## 6. Версии (pinned)
 
-> Эти детали не блокируют MVP (Phase 1–5): LLM используется только с Phase 6. Адаптер изолирует риск изменения провайдера/параметров.
-
-## 6. Версии (зафиксировать на Phase 1)
-
-Точные версии библиотек фиксируются в `pyproject.toml` / `package.json` на Phase 1 (каркас). Здесь зафиксирован выбор библиотек и их роли; конкретные pinned-версии — артефакт Phase 1.
+Pinned-версии зафиксированы в [`backend/requirements.txt`](../backend/requirements.txt) и [`frontend/package.json`](../frontend/package.json). Ключевые backend-зависимости: `fastapi`, `uvicorn`/`gunicorn`, `sqlalchemy[asyncio]`, `psycopg`, `alembic`, `pydantic`/`pydantic-settings`, `httpx`, `apscheduler`, `structlog`, `numpy`, `openai`, `tenacity`, `aiolimiter`, `selectolax`, `beautifulsoup4`, `pdfplumber`, `python-docx`, `python-multipart`, `pytest`/`pytest-asyncio`, `ruff`/`black`.

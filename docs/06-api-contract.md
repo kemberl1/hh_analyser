@@ -1,7 +1,10 @@
 # 06 — Контракт REST API (API Contract)
 
 > Базовый префикс: `/api/v1`. Формат — JSON. Спецификация OpenAPI генерируется автоматически (FastAPI) на `/docs` и `/openapi.json`.
-> Метрики отдаются из предрассчитанных снапшотов (см. [`04-metrics.md`](04-metrics.md)).
+>
+> **Статус:** реализовано. Фактически смонтированы: health, ingestion/status, 8 метрик-эндпоинтов, insights/market, 2 resume-эндпоинта. Метрики считаются **on-the-fly** (механизм snapshots готов, см. [`04-metrics.md`](04-metrics.md)).
+> **Нюанс конверта:** в `meta` поля `date_from`/`date_to` (а также `computed_at`) могут быть `null`, если диапазон не задан явно / нет данных.
+> **Не вошло в MVP:** списочные drill-down-эндпоинты (`/vacancies`, `/skills`, `/employers`) — см. §4.
 
 ---
 
@@ -63,13 +66,15 @@
 
 ## 2. Служебные эндпоинты
 
-### 2.1. `GET /api/v1/health`
+### 2.1. `GET /api/v1/health` (и `GET /health`)
 
-Проверка живости.
+Проверка живости + доступности БД.
 
 ```json
-{ "status": "ok" }
+{ "status": "ok", "db": "ok" }
 ```
+
+> `db` = `ok` | `unavailable`. Эндпоинт доступен и как `/api/v1/health`, и как `/health`.
 
 ### 2.2. `GET /api/v1/ingestion/status`
 
@@ -253,9 +258,11 @@
 
 ---
 
-## 4. Списочные эндпоинты (опционально, FR-26)
+## 4. Списочные эндпоинты — НЕ вошли в MVP (FR-26)
 
-### 4.1. `GET /api/v1/vacancies`
+> ⚠️ **Не реализовано в MVP.** Списочные drill-down-эндпоинты (`/vacancies`, `/skills`, `/employers`) спроектированы, но не вошли в MVP — фронту достаточно метрик-эндпоинтов. Контракт-набросок сохранён ниже для возможного развития (post-MVP).
+
+### 4.1. `GET /api/v1/vacancies` (не реализовано)
 
 Список вакансий с пагинацией (для drill-down / отладки).
 
@@ -279,78 +286,106 @@
 }
 ```
 
-### 4.2. `GET /api/v1/skills`
+### 4.2. `GET /api/v1/skills` (не реализовано)
 
 Справочник канонических навыков (для автодополнения фильтров).
 
-### 4.3. `GET /api/v1/employers`
+### 4.3. `GET /api/v1/employers` (не реализовано)
 
 Справочник работодателей с числом вакансий.
 
 ---
 
-## 5. Эндпоинты LLM (поздние фазы — проектно)
-
-> Реализуются на Phase 6–7; здесь зафиксирован контракт-набросок.
+## 5. Эндпоинты LLM (Phase 6–7 — реализовано)
 
 ### 5.1. `GET /api/v1/insights/market` (Phase 6)
 
-LLM-сгенерированный текстовый анализ рынка по агрегатам.
+LLM-сгенерированный текстовый анализ рынка по обезличенным агрегатам. **Query:** `period`, `date_from`, `date_to`, `grade`.
+
+**Response (LLM включён):**
 
 ```json
 {
-  "meta": { "period": "month", "grade": "all", "model": "x5-airun-medium", "generated_at": "2026-06-06T04:00:00Z" },
+  "meta": { "period": "month", "grade": "all", "llm_enabled": true, "model": "x5-airun-medium", "generated_at": "2026-06-06T04:00:00Z" },
   "data": {
     "summary": "Спрос на Frontend стабилен; медиана Middle выросла на 4 процента MoM...",
     "highlights": [ "React и TypeScript — обязательный стек", "Растёт доля remote" ],
-    "based_on": { "sample_size": 1843, "snapshot_ids": [1201, 1202] }
+    "based_on": { "sample_size": 1843 }
   }
 }
 ```
 
-### 5.2. `POST /api/v1/resume/analyze` (Phase 7)
+> **Graceful-degradation:** при `LLM_ENABLED=false` / отсутствии `API_KEY` возвращается `200` с `meta.llm_enabled=false` и сообщением о недоступности; при ошибке/таймауте LLM — `200` с сообщением об ошибке. Конверт `{ meta, data }` сохраняется всегда.
 
-Анализ резюме (профпригодность). Тело — текст резюме или файл (multipart). PII санитизируется перед отправкой в LLM (NFR-16).
+### 5.2. `POST /api/v1/resume/analyze` (Phase 7) — multipart/form-data
+
+Анализ резюме (профпригодность). PII санитизируется **до** отправки в LLM (NFR-16); резюме **не хранится** (NFR-14).
+
+**Request (multipart/form-data):** поля
+- `file` — PDF или DOCX (опционально; при наличии имеет приоритет; лимит 5 МБ),
+- `resume_text` — текст резюме (опционально),
+- `target_grade` — `junior` | `middle` | `senior` (опционально).
+
+### 5.3. `POST /api/v1/resume/analyze/text` (Phase 7) — JSON
+
+Альтернатива для текстового ввода.
 
 **Request (application/json):**
 
 ```json
-{ "resume_text": "...", "target_grade": "middle", "consent_store": false }
+{ "resume_text": "...", "target_grade": "middle" }
 ```
 
-**Response:**
+**Response (общий для обоих resume-эндпоинтов):**
 
 ```json
 {
-  "meta": { "model": "x5-airun-medium", "embedding_model": "x5-airun-embed-4b", "analyzed_at": "2026-06-06T10:00:00Z" },
+  "meta": {
+    "model": "x5-airun-medium",
+    "analyzed_at": "2026-06-06T10:00:00Z",
+    "llm_enabled": true,
+    "llm_enhanced": true,
+    "pii_entities_removed": 5
+  },
   "data": {
-    "market_fit_score": 0.72,
+    "market_fit_score": 72,
     "passes_keyword_filters": true,
+    "estimated_grade": "middle",
+    "salary_range": { "from": 180000, "to": 260000 },
     "matched_skills": [ "React", "TypeScript", "Redux" ],
     "missing_in_demand_skills": [ "Next.js", "Testing" ],
-    "recommendations": [ "Добавить опыт с Next.js", "Указать инструменты тестирования" ]
+    "resume_skills": [ "React", "TypeScript", "Redux", "Sass" ],
+    "skill_match_ratio": 0.6,
+    "strengths": [ "Сильный React-стек" ],
+    "weaknesses": [ "Нет инструментов тестирования" ],
+    "recommendations": [ "Добавить опыт с Next.js", "Указать инструменты тестирования" ],
+    "market_sample_size": 33,
+    "llm_error": null
   }
 }
 ```
 
+> **Примечания:** `market_fit_score` — целое (0–100). `salary_range.from` сериализуется как `from` (alias). Поля `consent_store`/`embedding_model` из ранних набросков **не используются**. При отключённом/сбойном LLM возвращается частичный rule-based результат (`llm_enhanced=false`, при ошибке — `llm_error` с текстом), HTTP `200`. Ошибки парсинга файла → `400`; превышение размера → `413`.
+
 ---
 
-## 6. Сводная таблица эндпоинтов
+## 6. Сводная таблица эндпоинтов (фактически реализованные)
 
-| Метод | Путь | Назначение | Фаза |
-|-------|------|------------|------|
-| GET | `/api/v1/health` | живость | 1 |
-| GET | `/api/v1/ingestion/status` | статус сбора | 3 |
-| GET | `/api/v1/metrics/salary` | зарплатные метрики | 4 |
-| GET | `/api/v1/metrics/salary/timeseries` | ряд медианы | 4 |
-| GET | `/api/v1/metrics/skills` | рейтинг навыков | 4 |
-| GET | `/api/v1/metrics/skills/cooccurrence` | связки навыков | 4 |
-| GET | `/api/v1/metrics/employers` | топ работодателей | 4 |
-| GET | `/api/v1/metrics/demand` | динамика спроса | 4 |
-| GET | `/api/v1/metrics/distribution` | распределения | 4 |
-| GET | `/api/v1/metrics/overview` | сводка дашборда | 4 |
-| GET | `/api/v1/vacancies` | список вакансий | 4 |
-| GET | `/api/v1/skills` | справочник навыков | 4 |
-| GET | `/api/v1/employers` | справочник работодателей | 4 |
-| GET | `/api/v1/insights/market` | LLM-анализ рынка | 6 |
-| POST | `/api/v1/resume/analyze` | анализ резюме | 7 |
+| Метод | Путь | Назначение | Фаза | Статус |
+|-------|------|------------|------|--------|
+| GET | `/api/v1/health`, `/health` | живость + БД | 1 | ✅ |
+| GET | `/api/v1/ingestion/status` | статус сбора + свежесть | 3 | ✅ |
+| GET | `/api/v1/metrics/salary` | зарплатные метрики | 4 | ✅ |
+| GET | `/api/v1/metrics/salary/timeseries` | ряд медианы | 4 | ✅ |
+| GET | `/api/v1/metrics/skills` | рейтинг навыков | 4 | ✅ |
+| GET | `/api/v1/metrics/skills/cooccurrence` | связки навыков | 4 | ✅ |
+| GET | `/api/v1/metrics/employers` | топ работодателей + концентрация | 4 | ✅ |
+| GET | `/api/v1/metrics/demand` | динамика спроса | 4 | ✅ |
+| GET | `/api/v1/metrics/distribution` | распределения | 4 | ✅ |
+| GET | `/api/v1/metrics/overview` | сводка дашборда | 4 | ✅ |
+| GET | `/api/v1/insights/market` | LLM-анализ рынка | 6 | ✅ |
+| POST | `/api/v1/resume/analyze` | анализ резюме (multipart PDF/DOCX/текст) | 7 | ✅ |
+| POST | `/api/v1/resume/analyze/text` | анализ резюме (JSON-текст) | 7 | ✅ |
+| GET | `/api/v1/vacancies` | список вакансий | — | ⚠️ не в MVP |
+| GET | `/api/v1/skills` | справочник навыков | — | ⚠️ не в MVP |
+| GET | `/api/v1/employers` | справочник работодателей | — | ⚠️ не в MVP |

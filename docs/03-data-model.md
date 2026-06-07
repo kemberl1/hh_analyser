@@ -2,6 +2,13 @@
 
 > СУБД: PostgreSQL. ORM: SQLAlchemy 2.x. Миграции: Alembic.
 > Ключевые принципы: учёт по `published_at` (FR-11), идемпотентность через `hh_vacancy_id` (FR-4, AD-7), хранение сырого источника (`raw_payload`/`raw_html` + `source_type`, FR-8), фильтрация релевантности перед записью (FR-41–FR-47, AD-8).
+>
+> **Статус:** реализовано. Схема развёрнута тремя миграциями Alembic:
+> - **`0001_baseline`** — базовые таблицы (employers, vacancies, salaries, skills, skill_aliases, vacancy_skills, grades, currency_rates, ingestion_runs).
+> - **`0002_phase2_tables`** — таблицы Phase 2 (relevance_terms, filtered_vacancies) и поля счётчиков/источника.
+> - **`0003_phase4_snapshots`** — таблица snapshots для предрассчитанных агрегаций.
+>
+> Все 11+ таблиц, описанных ниже, соответствуют фактической реализации. Отклонения MVP помечены явно.
 
 ---
 
@@ -186,7 +193,7 @@ erDiagram
 | `grade_id` | `smallint` | FK → grades.id | Определённый грейд |
 | `experience_raw` | `text` | NULL | Опыт как у hh.ru (noExperience/between1And3/...) |
 | `employment_format` | `text` | NULL | `office` / `remote` / `hybrid` / `unknown` |
-| `area_name` | `text` | NULL | Город/регион |
+| `area_name` | `text` | NULL | Город/регион. **Упрощение MVP:** поле присутствует в схеме, но не заполняется (хранится NULL) — извлечение региона не вошло в MVP. |
 | `published_at` | `timestamptz` | **NOT NULL, INDEX** | Дата публикации — ось времени метрик |
 | `hh_created_at` | `timestamptz` | NULL | Дата создания на hh.ru |
 | `url` | `text` | NULL | Ссылка на оригинал |
@@ -367,6 +374,7 @@ flowchart TB
 
 ## 5. Заметки по эволюции схемы
 
-- Все изменения — через Alembic-миграции (NFR-27).
+- Все изменения — через Alembic-миграции (NFR-27). Текущая цепочка: `0001_baseline` → `0002_phase2_tables` → `0003_phase4_snapshots` (head).
 - Для перехода к большим объёмам — кандидат на партиционирование `vacancies` по `published_at` (range partitioning) в поздних фазах.
 - `snapshots.payload` (JSONB) позволяет добавлять новые метрики без миграций структуры.
+- **Упрощение MVP:** `vacancies.area_name` не заполняется (NULL) — извлечение региона не реализовано.
