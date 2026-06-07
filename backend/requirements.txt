@@ -42,3 +42,10 @@ aiolimiter>=1.2.0,<2.0
 # HTML parsing (Phase 2+)
 selectolax>=0.3.0,<1.0
 beautifulsoup4>=4.13.0,<5.0
+
+# PDF/DOCX parsing (Phase 7 — resume analyser)
+pdfplumber>=0.11.0,<1.0
+python-docx>=1.1.0,<2.0
+
+# Multipart form data (Phase 7 — file upload)
+python-multipart>=0.0.20

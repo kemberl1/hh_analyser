@@ -1,5 +1,6 @@
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery } from "@tanstack/react-query";
 import {
+  analyzeResume,
   fetchCooccurrence,
   fetchDemand,
   fetchDistribution,
@@ -11,7 +12,7 @@ import {
   fetchSalaryTimeseries,
   fetchSkills,
 } from "./client";
-import type { DistributionBy, MetricFilters } from "./types";
+import type { DistributionBy, MetricFilters, ResumeAnalysisResponse } from "./types";
 
 /** Stable key factory — filters included so TanStack Query refetches on change */
 const keys = {
@@ -112,5 +113,17 @@ export function useMarketInsight(filters: MetricFilters) {
     queryFn: () => fetchMarketInsight(filters),
     staleTime: 300_000, // 5 min — insight is cached server-side too
     retry: 1, // only 1 retry (server already handles LLM retries)
+  });
+}
+
+// ===== Phase 7: Resume Analysis =====
+
+export function useAnalyzeResume() {
+  return useMutation<
+    ResumeAnalysisResponse,
+    Error,
+    { file?: File; resumeText?: string; targetGrade?: string }
+  >({
+    mutationFn: analyzeResume,
   });
 }

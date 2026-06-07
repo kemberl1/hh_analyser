@@ -226,3 +226,40 @@ export interface MarketInsightResponse {
   meta: InsightMeta;
   data: InsightData;
 }
+
+// ===== /resume/analyze (Phase 7) =====
+
+export interface ResumeAnalysisMeta {
+  model?: string | null;
+  embedding_model?: string | null;
+  analyzed_at?: string | null;
+  llm_enabled?: boolean;
+  llm_enhanced?: boolean;
+  pii_entities_removed?: number;
+}
+
+export interface SalaryRange {
+  from: number | null;
+  to: number | null;
+}
+
+export interface ResumeAnalysisData {
+  market_fit_score: number;
+  passes_keyword_filters: boolean;
+  estimated_grade?: string | null;
+  salary_range?: SalaryRange | null;
+  matched_skills: string[];
+  missing_in_demand_skills: string[];
+  resume_skills: string[];
+  skill_match_ratio: number;
+  strengths: string[];
+  weaknesses: string[];
+  recommendations: string[];
+  market_sample_size: number;
+  llm_error?: string | null;
+}
+
+export interface ResumeAnalysisResponse {
+  meta: ResumeAnalysisMeta;
+  data: ResumeAnalysisData;
+}

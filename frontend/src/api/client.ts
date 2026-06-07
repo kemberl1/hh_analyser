@@ -9,6 +9,7 @@ import type {
   MarketInsightResponse,
   MetricFilters,
   OverviewData,
+  ResumeAnalysisResponse,
   SalaryData,
   SalaryTimeseriesData,
   SkillsData,
@@ -127,4 +128,44 @@ export function fetchMarketInsight(
   filters: MetricFilters
 ): Promise<MarketInsightResponse> {
   return fetchJson(`${BASE}/insights/market${buildParams(filters)}`);
+}
+
+// ===== Phase 7: Resume Analysis =====
+
+export async function analyzeResume(params: {
+  file?: File;
+  resumeText?: string;
+  targetGrade?: string;
+}): Promise<ResumeAnalysisResponse> {
+  const formData = new FormData();
+
+  if (params.file) {
+    formData.append("file", params.file);
+  }
+  if (params.resumeText) {
+    formData.append("resume_text", params.resumeText);
+  }
+  if (params.targetGrade) {
+    formData.append("target_grade", params.targetGrade);
+  }
+
+  const res = await fetch(`${BASE}/resume/analyze`, {
+    method: "POST",
+    body: formData,
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    let message = `HTTP ${res.status}`;
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed?.detail) message = String(parsed.detail);
+      else if (parsed?.error?.message) message = parsed.error.message;
+    } catch {
+      // use default message
+    }
+    throw new Error(message);
+  }
+
+  return res.json();
 }
