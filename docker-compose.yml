@@ -66,6 +66,16 @@ services:
       API_KEY: ${API_KEY:-}
       SCHEDULER_CRON_HOUR: ${SCHEDULER_CRON_HOUR:-3}
       SCHEDULER_CRON_MINUTE: ${SCHEDULER_CRON_MINUTE:-0}
+      SCHEDULER_TIMEZONE: ${SCHEDULER_TIMEZONE:-Europe/Moscow}
+      SCHEDULER_MAX_PAGES: ${SCHEDULER_MAX_PAGES:-}
+      SCHEDULER_MISFIRE_GRACE_TIME: ${SCHEDULER_MISFIRE_GRACE_TIME:-3600}
+      HH_SOURCE: ${HH_SOURCE:-html}
+      HH_API_FALLBACK_ENABLED: ${HH_API_FALLBACK_ENABLED:-false}
+      HH_MAX_PAGES: ${HH_MAX_PAGES:-20}
+      HH_USER_AGENT: "${HH_USER_AGENT:-HHAnalyserBot/1.0 (contact: hh-analyser@example.com)}"
+      HH_REQUEST_DELAY_MIN: ${HH_REQUEST_DELAY_MIN:-1.5}
+      HH_REQUEST_DELAY_MAX: ${HH_REQUEST_DELAY_MAX:-3.5}
+      HH_RATE_LIMIT_RPS: ${HH_RATE_LIMIT_RPS:-1.0}
     depends_on:
       migrations:
         condition: service_completed_successfully

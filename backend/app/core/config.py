@@ -44,6 +44,9 @@ class Settings(BaseSettings):
     # --- Scheduler ---
     SCHEDULER_CRON_HOUR: int = 3
     SCHEDULER_CRON_MINUTE: int = 0
+    SCHEDULER_TIMEZONE: str = "Europe/Moscow"
+    SCHEDULER_MAX_PAGES: int | None = None  # None → use HH_MAX_PAGES
+    SCHEDULER_MISFIRE_GRACE_TIME: int = 3600  # seconds; skip if missed by > 1h
 
     # ======== Phase 2: Crawler / Parser ========
 
