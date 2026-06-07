@@ -12,7 +12,7 @@ HH Analyser — это монорепозиторий с тремя исполн
 2. **Scheduler** (worker) — ежедневный CRON-процесс: запускает парсер, нормализацию, запись в БД, пересчёт агрегаций.
 3. **Frontend** (React + Vite) — дашборды и инфографика.
 
-Хранилище — единая **PostgreSQL**. Внешние зависимости — `api.hh.ru` (+ HTML-фолбэк), источник курсов валют (ЦБ РФ) и LLM-провайдер (X5 CoPilot API, фазы 6–7).
+Хранилище — единая **PostgreSQL**. Внешние зависимости — HTML-страницы hh.ru (**основной источник**), `api.hh.ru` (фолбэк по флагу/при доступности), источник курсов валют (ЦБ РФ) и LLM-провайдер (X5 CoPilot API, фазы 6–7).
 
 ```mermaid
 flowchart TB
@@ -34,8 +34,8 @@ flowchart TB
     FE -->|REST JSON| API
     API -->|SQL чтение| DB
     SCHED -->|SQL запись и upsert| DB
-    SCHED -->|HTTP основной путь| HHAPI
-    SCHED -->|HTTP фолбэк| HHWEB
+    SCHED -->|HTTP основной путь HTML парсинг| HHWEB
+    SCHED -.->|HTTP фолбэк по флагу при доступности| HHAPI
     SCHED -->|курсы| CBR
     API -.->|Phase 6 7| LLM
     SCHED -.->|Phase 6| LLM
@@ -46,13 +46,23 @@ flowchart TB
 ### 2.1. Parser (источник данных)
 
 - **Назначение:** получить «сырые» вакансии Frontend по РФ.
-- **Стратегия:** primary — клиент `api.hh.ru`; fallback — HTML-скрейпер. Выбор стратегии инкапсулирован за общим интерфейсом `VacancySource`.
-- **Особенности:** rate-limiting, retry/backoff, идентифицирующий `User-Agent`, сохранение `raw_payload`.
+- **Стратегия:** **primary — `HtmlVacancySource`** (HTML-парсинг страниц поиска и страниц вакансий hh.ru); **fallback — `ApiVacancySource`** (клиент `api.hh.ru`, помечен как «может быть недоступен; включается по флагу/при доступности»). Выбор реализации инкапсулирован за общим интерфейсом `VacancySource`; меняется только приоритет/порядок реализаций, сам интерфейс сохраняется.
+- **Особенности HTML-парсинга:** конфигурируемые CSS-селекторы (устойчивость к смене вёрстки), обработка пагинации, обнаружение капчи/блокировок (без обхода защиты), вежливый краулинг (User-Agent с контактом, задержки), rate-limiting (aiolimiter), retry/backoff (tenacity), сохранение сырого HTML/`raw_payload` с `source_type`.
 
 ### 2.2. Normalizer (нормализация)
 
 - Приводит сырые данные к доменной модели: валюты, gross/net, грейд, канонизация навыков, формат работы, опыт.
 - Детерминированная и тестируемая логика (без сети).
+- Грейд определяется **после** прохождения Relevance Filter (§2.3a, FR-47).
+
+### 2.3a. Relevance Filter (фильтрация релевантности)
+
+- **Назначение:** между извлечением (parse) и записью (upsert) отсеять нерелевантные («мусорные») вакансии (Fullstack, Backend, руководитель проектов, QA, DevOps, аналитик, дизайнер и т.п.), которые возвращает поиск hh.ru по запросу Frontend (FR-41).
+- **Подход MVP — rule-based** (без LLM): скоринг по двум конфигурируемым словарям — **положительные маркеры** Frontend и **стоп-сигналы** (FR-42).
+- **Источники сигналов:** заголовок вакансии (повышенный вес) и описание/ключевые навыки.
+- **Политика разрешения конфликтов (по умолчанию):** считается `score = sum(вес положительных) - sum(вес стоп-сигналов)`; **приоритет заголовка над описанием** (вес сигналов из заголовка выше); вакансия принимается при `score >= relevance_threshold` (конфигурируемый порог). Явный стоп-сигнал в заголовке (например «руководитель проекта») может задавать жёсткий отброс независимо от score (конфигурируемо).
+- **Конфигурируемость (FR-44):** словари и порог хранятся в конфиге и/или таблицах БД; правятся без изменения кода.
+- **Результат:** релевантные вакансии идут на нормализацию и upsert; отброшенные **не сохраняются** как валидные, но считаются (FR-45) и опционально логируются в аудит (FR-46).
 
 ### 2.3. Ingestion / Persistence (запись в БД)
 
@@ -63,7 +73,7 @@ flowchart TB
 ### 2.4. Scheduler (планировщик)
 
 - Запуск ежедневно по CRON. В MVP — APScheduler внутри worker-процесса (альтернатива — системный cron, см. [`05-tech-stack.md`](05-tech-stack.md)).
-- Оркестрирует пайплайн: parse → normalize → persist → aggregate.
+- Оркестрирует пайплайн: parse → **relevance filter** → normalize → persist → aggregate.
 
 ### 2.5. Aggregation (агрегации/метрики)
 
@@ -98,7 +108,9 @@ flowchart TB
     M --> PG[(PostgreSQL)]
 
     subgraph Ingestion [Пайплайн сбора]
-        P[Parser VacancySource] --> N[Normalizer]
+        P[Parser VacancySource primary HTML fallback API] --> RF[Relevance Filter rule based]
+        RF -->|релевантно| N[Normalizer]
+        RF -.->|мусор отброшено| DROP[Счётчик и опц аудит]
         N --> ING[Ingestion Service]
         ING --> RepoW
         AGG[Aggregation Service] --> RepoW
@@ -127,25 +139,33 @@ flowchart TB
 sequenceDiagram
     participant CRON as Scheduler CRON
     participant SRC as VacancySource
-    participant HH as api.hh.ru
+    participant WEB as hh.ru HTML primary
+    participant API as api.hh.ru fallback
+    participant RF as Relevance Filter
     participant NRM as Normalizer
     participant DB as PostgreSQL
     participant AGG as Aggregation
 
     CRON->>DB: создать запись ingestion_runs статус running
     CRON->>SRC: запросить список Frontend вакансий РФ
-    SRC->>HH: GET vacancies с фильтрами и пагинацией
-    alt API доступен
-        HH-->>SRC: список вакансий JSON
-    else API недоступен
-        SRC->>SRC: фолбэк на HTML скрейпинг
+    alt HTML парсинг доступен primary
+        SRC->>WEB: GET страницы поиска с пагинацией
+        WEB-->>SRC: HTML выдачи и ссылки на вакансии
+    else включён флаг API или HTML недоступен
+        SRC->>API: GET vacancies с фильтрами и пагинацией
+        API-->>SRC: список вакансий JSON
     end
     loop по каждой вакансии
-        SRC->>HH: GET vacancies id детали
-        HH-->>SRC: детали вакансии
-        SRC->>NRM: сырые данные
-        NRM->>NRM: валюта grade skills формат
-        NRM->>DB: upsert по hh_vacancy_id
+        SRC->>WEB: GET страница вакансии HTML primary
+        WEB-->>SRC: HTML вакансии или сырой payload
+        SRC->>RF: сырые данные заголовок описание
+        alt релевантно Frontend
+            RF->>NRM: передать на нормализацию
+            NRM->>NRM: валюта skills формат затем grade
+            NRM->>DB: upsert по hh_vacancy_id
+        else мусор Fullstack Backend PM QA
+            RF->>DB: инкремент filtered_count и опц аудит
+        end
     end
     CRON->>AGG: пересчитать снапшоты по published_at
     AGG->>DB: атомарно заменить snapshots
@@ -216,8 +236,10 @@ flowchart TB
 |---|---------|-------------|
 | AD-1 | Разделение API и Scheduler на отдельные процессы | Изоляция нагрузки сбора от обслуживания запросов; независимое масштабирование |
 | AD-2 | Предрасчёт снапшотов вместо запросов на лету | Производительность дашбордов (NFR-1, NFR-2) |
-| AD-3 | Интерфейс `VacancySource` с primary/fallback | Устойчивость к изменениям hh.ru (FR-3) |
+| AD-3 | Интерфейс `VacancySource`: primary `HtmlVacancySource`, fallback `ApiVacancySource` | api.hh.ru недоступен — HTML-парсинг primary; API включается по флагу/при доступности (FR-2, FR-3) |
 | AD-4 | Хранение `raw_payload` | Переобработка без повторного парсинга (FR-8) |
 | AD-5 | Абстрактный `LLMClient` | Заменяемость провайдера (NFR-28) |
 | AD-6 | Ось времени = `published_at` | Корректная рыночная статистика (FR-11) |
 | AD-7 | Upsert по `hh_vacancy_id` | Идемпотентность сбора (FR-4) |
+| AD-8 | Отдельный шаг Relevance Filter (rule-based) перед нормализацией/записью | Отсев нерелевантных вакансий; нерелевантные не попадают в БД (FR-41–FR-47) |
+| AD-9 | Конфигурируемые селекторы парсинга и словари релевантности | Устойчивость к смене вёрстки и корректировка правил без правки кода (FR-37, FR-44) |

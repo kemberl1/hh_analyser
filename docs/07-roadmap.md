@@ -9,7 +9,7 @@
 
 ```mermaid
 flowchart LR
-    P1[Phase 1 Каркас] --> P2[Phase 2 Парсер]
+    P1[Phase 1 Каркас] --> P2[Phase 2 Парсер HTML и фильтрация]
     P2 --> P3[Phase 3 CRON]
     P3 --> P4[Phase 4 Метрики]
     P4 --> P5[Phase 5 Фронтенд]
@@ -22,7 +22,7 @@ flowchart LR
 | Фаза | Название | Зависит от |
 |------|----------|------------|
 | 1 | Каркас проекта | — |
-| 2 | Парсер hh.ru + нормализация + запись | 1 |
+| 2 | Парсер hh.ru HTML primary + Relevance Filtering + нормализация + запись | 1 |
 | 3 | CRON-планировщик | 2 |
 | 4 | Агрегации/метрики + фильтры | 2, 3 |
 | 5 | Фронтенд-дашборды | 4 |
@@ -58,31 +58,36 @@ flowchart LR
 
 ---
 
-## Phase 2 — Парсер hh.ru + нормализация + запись в БД
+## Phase 2 — Парсер hh.ru (HTML primary) + Relevance Filtering + нормализация + запись в БД
 
-**Цель:** наполнить БД нормализованными Frontend-вакансиями по РФ.
+**Цель:** наполнить БД нормализованными и **релевантными** Frontend-вакансиями по РФ, собирая их через **HTML-парсинг как основной путь** (api.hh.ru недоступен — fallback по флагу/при доступности).
 
 **Объём работ:**
-- Alembic-миграции под схему из [`03-data-model.md`](03-data-model.md) (employers, vacancies, salaries, skills, skill_aliases, vacancy_skills, grades, currency_rates, ingestion_runs).
-- Клиент `api.hh.ru` (httpx): поиск Frontend-вакансий по РФ, пагинация, детали по `id`.
-- Интерфейс `VacancySource` с primary (API) и fallback (HTML через selectolax/BeautifulSoup).
-- Rate-limiting (aiolimiter), retry/backoff (tenacity), идентифицирующий User-Agent.
-- Normalizer: валюта→RUB (currency_rates / ЦБ РФ), gross→net, определение грейда, канонизация навыков, формат работы.
-- Идемпотентный upsert по `hh_vacancy_id`; запись `raw_payload`.
-- Сид справочников `grades` и стартовых `skill_aliases`.
+- Alembic-миграции под схему из [`03-data-model.md`](03-data-model.md) (employers, vacancies с `source_type`/`raw_html`, salaries, skills, skill_aliases, vacancy_skills, grades, currency_rates, ingestion_runs с `filtered_count`/`api_fallback_count`/`captcha_block_count`; опционально `filtered_vacancies`; `relevance_terms`).
+- **`HtmlVacancySource` (primary)** на httpx + selectolax/BeautifulSoup: краулинг страниц поиска Frontend по РФ с пагинацией, парсинг страниц вакансий, **конфигурируемые CSS-селекторы** (FR-37), сохранение `raw_html` (FR-40), обнаружение капчи/блокировок без обхода защиты (FR-39).
+- **`ApiVacancySource` (fallback)** на httpx: клиент `api.hh.ru` (поиск + детали по `id`), **включается по флагу/при доступности** (FR-3). Единый интерфейс `VacancySource`, primary/fallback переключаемы.
+- Вежливый краулинг: rate-limiting (aiolimiter), задержки, retry/backoff (tenacity, NFR-31), идентифицирующий User-Agent.
+- **Relevance Filter (rule-based)** между parse и upsert: скоринг по конфигурируемым словарям `relevance_terms` (positive/stop), приоритет заголовка, конфигурируемый порог; нерелевантные **не сохраняются**, считаются (`filtered_count`) и опционально логируются в `filtered_vacancies` (FR-41–FR-46).
+- Normalizer: валюта→RUB (currency_rates / ЦБ РФ), gross→net, **определение грейда после фильтра релевантности** (FR-47), канонизация навыков, формат работы.
+- Идемпотентный upsert по `hh_vacancy_id`; запись `raw_payload`/`raw_html` + `source_type`.
+- Сид справочников `grades`, стартовых `skill_aliases` и **словарей `relevance_terms`**.
 - CLI-команда ручного запуска сбора.
 
 **Deliverables:**
-- Команда сбора, наполняющая БД реальными данными.
-- Юнит-тесты нормализации (валюта, gross/net, грейд, point_estimate) и dedup.
+- Команда сбора (HTML primary), наполняющая БД реальными релевантными данными.
+- Юнит-тесты нормализации (валюта, gross/net, грейд, point_estimate), dedup и **Relevance Filter** (релевантно/мусор, разрешение конфликтов).
 
 **Definition of Done:**
-- [ ] Запуск CLI-сбора наполняет `vacancies` реальными Frontend-вакансиями по РФ.
+- [ ] Запуск CLI-сбора наполняет `vacancies` реальными Frontend-вакансиями по РФ **через HTML-парсинг (primary)**.
+- [ ] `ApiVacancySource` реализован как **fallback**, выключен по умолчанию, включается флагом/при доступности api.hh.ru; переключение источника логируется.
+- [ ] **Нерелевантные вакансии (Fullstack, Backend, руководитель проектов, QA, DevOps, аналитик, дизайнер и т.п.) не попадают в БД**; число отфильтрованных фиксируется в `ingestion_runs.filtered_count`.
+- [ ] Словари релевантности и порог **конфигурируемы** (правятся без изменения кода); приоритет заголовка над описанием соблюдён.
+- [ ] CSS-селекторы парсинга вынесены в конфиг; обнаружение капчи/блокировки логируется (`captcha_block_count`), защита не обходится.
 - [ ] Повторный запуск **не создаёт дубликатов** (проверка по `hh_vacancy_id`).
 - [ ] Зарплаты нормализованы (RUB, net, point_estimate); вакансии без зарплаты помечены корректно.
-- [ ] Грейд проставляется; навыки канонизированы и связаны через `vacancy_skills`.
-- [ ] Срабатывание HTML-фолбэка логируется; `ingestion_runs` фиксирует счётчики.
-- [ ] Тесты нормализации и dedup зелёные.
+- [ ] Грейд проставляется **после** фильтра релевантности; навыки канонизированы и связаны через `vacancy_skills`.
+- [ ] Сохраняется `raw_html`/`raw_payload` + `source_type`; `ingestion_runs` фиксирует счётчики.
+- [ ] Тесты нормализации, dedup и Relevance Filter зелёные.
 
 **Зависимости:** Phase 1.
 
@@ -222,4 +227,5 @@ flowchart LR
 - Миграции только через Alembic (NFR-27).
 - Секреты — в `.env`, не в репозитории (NFR-22).
 - Покрытие критичной логики тестами (NFR-29).
-- Соблюдение rate-limiting и ToS hh.ru (NFR-8–NFR-11) во всех фазах со сбором.
+- Соблюдение rate-limiting, вежливого краулинга и ToS hh.ru (NFR-8–NFR-11, NFR-31) во всех фазах со сбором; HTML-парсинг — основной путь, api.hh.ru — fallback.
+- Relevance Filtering применяется при каждом сборе: нерелевантные вакансии не попадают в БД; словари релевантности конфигурируемы (FR-41–FR-47).

@@ -1,7 +1,7 @@
 # 03 — Модель данных (Data Model, PostgreSQL)
 
 > СУБД: PostgreSQL. ORM: SQLAlchemy 2.x. Миграции: Alembic.
-> Ключевые принципы: учёт по `published_at` (FR-11), идемпотентность через `hh_vacancy_id` (FR-4, AD-7), хранение `raw_payload` (FR-8).
+> Ключевые принципы: учёт по `published_at` (FR-11), идемпотентность через `hh_vacancy_id` (FR-4, AD-7), хранение сырого источника (`raw_payload`/`raw_html` + `source_type`, FR-8), фильтрация релевантности перед записью (FR-41–FR-47, AD-8).
 
 ---
 
@@ -15,6 +15,7 @@ erDiagram
     SKILLS ||--o{ VACANCY_SKILLS : appears_in
     GRADES ||--o{ VACANCIES : classifies
     INGESTION_RUNS ||--o{ VACANCIES : produced_in
+    INGESTION_RUNS ||--o{ FILTERED_VACANCIES : rejected_in
     CURRENCY_RATES ||..|| SALARIES : converts
 
     EMPLOYERS {
@@ -40,7 +41,9 @@ erDiagram
         timestamptz hh_created_at
         text url
         boolean archived
+        text source_type
         jsonb raw_payload
+        text raw_html
         bigint ingestion_run_id FK
         timestamptz first_seen_at
         timestamptz last_seen_at
@@ -102,8 +105,30 @@ erDiagram
         int created_count
         int updated_count
         int error_count
-        int html_fallback_count
+        int filtered_count
+        int api_fallback_count
+        int captcha_block_count
         jsonb meta
+    }
+
+    FILTERED_VACANCIES {
+        bigint id PK
+        bigint hh_vacancy_id
+        text title
+        text reason
+        text matched_stopword
+        bigint ingestion_run_id FK
+        timestamptz created_at
+    }
+
+    RELEVANCE_TERMS {
+        bigint id PK
+        text term
+        text kind
+        text field_scope
+        numeric weight
+        boolean active
+        timestamptz updated_at
     }
 
     SNAPSHOTS {
@@ -166,7 +191,9 @@ erDiagram
 | `hh_created_at` | `timestamptz` | NULL | Дата создания на hh.ru |
 | `url` | `text` | NULL | Ссылка на оригинал |
 | `archived` | `boolean` | DEFAULT false | Архивная вакансия |
-| `raw_payload` | `jsonb` | NULL | Сырой ответ источника (FR-8) |
+| `source_type` | `text` | DEFAULT 'html' | Источник записи: `html` (primary) / `api` (fallback) (FR-8) |
+| `raw_payload` | `jsonb` | NULL | Сырой ответ API-фолбэка (JSON), если `source_type='api'` (FR-8) |
+| `raw_html` | `text` | NULL | Сырой HTML страницы вакансии для переобработки, если `source_type='html'` (FR-8, FR-40) |
 | `ingestion_run_id` | `bigint` | FK → ingestion_runs.id | Прогон, в котором запись впервые создана |
 | `first_seen_at` | `timestamptz` | DEFAULT now() | Когда впервые увидели |
 | `last_seen_at` | `timestamptz` | DEFAULT now() | Когда последний раз подтвердили/обновили |
@@ -250,10 +277,14 @@ erDiagram
 | `created_count` | `int` | DEFAULT 0 | Новых записей |
 | `updated_count` | `int` | DEFAULT 0 | Обновлённых записей |
 | `error_count` | `int` | DEFAULT 0 | Ошибок по вакансиям |
-| `html_fallback_count` | `int` | DEFAULT 0 | Сколько раз сработал HTML-фолбэк |
+| `filtered_count` | `int` | DEFAULT 0 | Отброшено как нерелевантные Relevance Filter (FR-45) |
+| `api_fallback_count` | `int` | DEFAULT 0 | Сколько раз использовался API-фолбэк `api.hh.ru` (вместо HTML primary) |
+| `captcha_block_count` | `int` | DEFAULT 0 | Сколько раз обнаружена капча/блокировка при HTML-краулинге (FR-39) |
 | `meta` | `jsonb` | NULL | Доп. детали (фильтры, версии) |
 
 Обеспечивает наблюдаемость (NFR-18, NFR-19) и статус-эндпоинт (FR-25).
+
+> Поле `html_fallback_count` из Phase 0 переосмыслено: т.к. HTML — primary, отдельно считаются `api_fallback_count` (использование API-фолбэка) и `captcha_block_count` (блокировки при краулинге).
 
 ### 2.10. `snapshots` — предрассчитанные агрегации
 
@@ -273,13 +304,49 @@ erDiagram
 
 > Снапшоты пересчитываются после каждого прогона и заменяются атомарно (NFR-7). Дашборды читают только их (NFR-2).
 
+### 2.11. `filtered_vacancies` — аудит отфильтрованных (опционально, FR-46)
+
+> **Optional.** Лог отброшенных Relevance Filter вакансий — для последующей настройки словарей. Не используется в метриках.
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `id` | `bigint` | PK | |
+| `hh_vacancy_id` | `bigint` | NOT NULL | ID вакансии на hh.ru (без UNIQUE — может повторяться между прогонами) |
+| `title` | `text` | NULL | Заголовок отброшенной вакансии |
+| `reason` | `text` | NULL | Причина отброса (`stopword` / `low_score` / `hard_stop_title`) |
+| `matched_stopword` | `text` | NULL | Сработавшее стоп-слово/маркер |
+| `ingestion_run_id` | `bigint` | FK → ingestion_runs.id | Прогон |
+| `created_at` | `timestamptz` | DEFAULT now() | |
+
+**Индексы:** `INDEX(ingestion_run_id)`, `INDEX(hh_vacancy_id)`.
+
+### 2.12. `relevance_terms` — словари релевантности (конфиг, FR-44)
+
+> Конфигурируемые словари ключевых/стоп-слов для Relevance Filter. Альтернатива хранению в конфиг-файле; таблица позволяет заказчику править правила без деплоя. Сидируется на Phase 2.
+
+| Поле | Тип | Ограничения | Описание |
+|------|-----|-------------|----------|
+| `id` | `bigint` | PK | |
+| `term` | `text` | NOT NULL | Слово/маркер (нормализованный, нижний регистр), напр. `react`, `fullstack` |
+| `kind` | `text` | NOT NULL | `positive` (Frontend-маркер) / `stop` (стоп-сигнал) |
+| `field_scope` | `text` | DEFAULT 'any' | Где искать: `title` / `description` / `any` |
+| `weight` | `numeric(6,2)` | DEFAULT 1.0 | Вес сигнала в скоринге (заголовок обычно весит больше) |
+| `active` | `boolean` | DEFAULT true | Включён ли термин |
+| `updated_at` | `timestamptz` | DEFAULT now() | |
+
+**Индексы:** `UNIQUE(term, kind, field_scope)`, `INDEX(kind, active)`.
+
+> Порог принятия `relevance_threshold` и флаг `hard_stop_on_title` хранятся в конфиге приложения (env / pydantic-settings); словари — в этой таблице и/или конфиге (FR-43, FR-44).
+
 ---
 
 ## 3. Идемпотентность и дедупликация
 
 ```mermaid
 flowchart TB
-    IN[Сырая вакансия с hh_vacancy_id] --> Q{Существует запись с таким hh_vacancy_id}
+    IN[Сырая вакансия с hh_vacancy_id] --> RF{Relevance Filter релевантно Frontend}
+    RF -- Нет --> SKIP[Не сохранять filtered_count плюс 1 опц аудит]
+    RF -- Да --> Q{Существует запись с таким hh_vacancy_id}
     Q -- Нет --> CR[INSERT новая vacancy создать salary и vacancy_skills]
     Q -- Да --> UP[UPDATE полей обновить last_seen_at пересчитать salary и skills]
     CR --> CNT[created_count плюс 1]

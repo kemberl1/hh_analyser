@@ -17,10 +17,10 @@
 | Валидация / схемы | **Pydantic v2** + **pydantic-settings** | DTO, конфиг из env | выбрано |
 | БД | **PostgreSQL 16** | хранилище | утверждено заказчиком |
 | Драйвер БД | **psycopg (v3)** | подключение | выбрано |
-| HTTP-клиент | **httpx** | запросы к api.hh.ru | выбрано |
-| HTML-парсинг | **selectolax** (primary) + **BeautifulSoup4** (fallback) | HTML-скрейпинг фолбэк | выбрано |
-| Retry / backoff | **tenacity** | устойчивость сети | выбрано |
-| Rate-limiting (исходящий) | **aiolimiter** | ограничение RPS к hh.ru | выбрано |
+| HTTP-клиент | **httpx** | HTTP-краулинг HTML-страниц hh.ru (primary) и запросы к api.hh.ru (fallback) | выбрано |
+| HTML-парсинг (**основной путь**) | **selectolax** (primary-парсер, lexbor) + **BeautifulSoup4** (для сложных случаев) | парсинг страниц поиска и вакансий hh.ru — primary источник данных | выбрано |
+| Retry / backoff | **tenacity** | устойчивость сети и краулинга (ретраи, backoff, jitter) | выбрано |
+| Rate-limiting (исходящий) | **aiolimiter** | ограничение RPS и вежливый краулинг hh.ru | выбрано |
 | Планировщик | **APScheduler** | ежедневный CRON | выбрано (альтернатива — системный cron) |
 | Числовые расчёты | **numpy** (+ при необходимости **pandas**) | перцентили, агрегации | выбрано |
 | LLM SDK | **openai** (Python) | клиент к X5 CoPilot API | выбрано (OpenAI-совместимый) |
@@ -43,9 +43,9 @@
 - **FastAPI + Pydantic v2** — нативная валидация, автогенерация OpenAPI (полезно для контракта в [`06-api-contract.md`](06-api-contract.md)), async.
 - **SQLAlchemy 2.x + Alembic** — зрелый ORM с типизацией 2.0-стиля; Alembic — стандарт миграций (NFR-27).
 - **psycopg v3** — современный драйвer PostgreSQL с поддержкой async и JSONB.
-- **httpx** — async HTTP, удобен для пагинации api.hh.ru; интегрируется с tenacity и aiolimiter.
-- **selectolax** — очень быстрый HTML-парсер (lexbor); BeautifulSoup4 — запасной для сложных случаев. Используются только в фолбэке (FR-3).
-- **tenacity** — retry с экспоненциальным backoff и jitter (NFR-5); **aiolimiter** — token-bucket лимит RPS (NFR-9).
+- **httpx** — async HTTP; основной путь — краулинг HTML-страниц hh.ru (поиск + вакансии) с пагинацией; интегрируется с tenacity и aiolimiter. Тот же клиент используется для API-фолбэка `api.hh.ru`, когда он доступен (FR-3).
+- **selectolax** — очень быстрый HTML-парсер (lexbor) — **основной инструмент извлечения** данных из HTML hh.ru (FR-2); BeautifulSoup4 — для сложных/нестабильных участков вёрстки. CSS-селекторы выносятся в конфиг для устойчивости к изменению вёрстки (FR-37, NFR-11).
+- **tenacity** — retry с экспоненциальным backoff и jitter (NFR-5, NFR-31); капча/блокировка трактуется как сигнал к паузе, а не к агрессивным ретраям (FR-39). **aiolimiter** — token-bucket лимит RPS + задержки для вежливого краулинга (NFR-9).
 - **APScheduler** — планировщик внутри worker-процесса; альтернатива — системный cron, вызывающий CLI-команду. Рекомендация: APScheduler для MVP (проще в одном Docker-стеке), с возможностью перейти на cron/Celery beat при росте.
 - **numpy** — перцентили/медианы (M1); альтернатива — SQL `percentile_cont` на стороне PostgreSQL (используется для тяжёлых агрегаций).
 - **structlog** — JSON-логи с correlation-id (NFR-18).

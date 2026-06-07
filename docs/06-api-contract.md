@@ -86,11 +86,15 @@
     "created_count": 180,
     "updated_count": 1960,
     "error_count": 10,
-    "html_fallback_count": 4
+    "filtered_count": 540,
+    "api_fallback_count": 0,
+    "captcha_block_count": 0
   },
   "data_freshness_hours": 12.1
 }
 ```
+
+> Источник данных по умолчанию — HTML-парсинг (primary). `api_fallback_count` > 0 означает, что использовался фолбэк `api.hh.ru` (FR-3); `filtered_count` — число отсеянных нерелевантных вакансий (Relevance Filtering, FR-45); `captcha_block_count` — срабатывания капчи/блокировок (FR-39).
 
 ---
 
