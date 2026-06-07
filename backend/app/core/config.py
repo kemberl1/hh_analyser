@@ -59,6 +59,32 @@ class Settings(BaseSettings):
     SCHEDULER_MAX_PAGES: int | None = None  # None → use HH_MAX_PAGES
     SCHEDULER_MISFIRE_GRACE_TIME: int = 3600  # seconds; skip if missed by > 1h
 
+    @field_validator("SCHEDULER_MAX_PAGES", mode="before")
+    @classmethod
+    def _empty_scheduler_max_pages(cls, v: Any) -> Any:
+        """Treat empty string as None (unset).
+
+        Docker Compose passes ``''`` when a variable has no default
+        (``${SCHEDULER_MAX_PAGES:-}``).  Pydantic cannot coerce ``''``
+        to ``int | None``, so we normalise it here.
+        """
+        if isinstance(v, str) and v.strip() == "":
+            return None
+        return v
+
+    @field_validator(
+        "SCHEDULER_CRON_HOUR",
+        "SCHEDULER_CRON_MINUTE",
+        "SCHEDULER_MISFIRE_GRACE_TIME",
+        mode="before",
+    )
+    @classmethod
+    def _empty_scheduler_int_defaults(cls, v: Any, info: Any) -> Any:
+        """Fall back to the field default when an empty string is provided."""
+        if isinstance(v, str) and v.strip() == "":
+            return cls.model_fields[info.field_name].default
+        return v
+
     # ======== Phase 2: Crawler / Parser ========
 
     # Source selection: "html" (primary) or "api" (fallback)

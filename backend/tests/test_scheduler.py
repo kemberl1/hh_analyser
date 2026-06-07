@@ -6,6 +6,7 @@ All network access is mocked — no real requests to hh.ru.
 from __future__ import annotations
 
 import asyncio
+import os
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -275,3 +276,57 @@ class TestIngestionStatusEndpoint:
         assert data["last_run"]["found_total"] == 100
         assert data["data_freshness_hours"] is not None
         assert isinstance(data["data_freshness_hours"], float)
+
+
+# ---------------------------------------------------------------------------
+# 5. Scheduler settings empty-string resilience (hotfix regression guard)
+# ---------------------------------------------------------------------------
+
+
+class TestSchedulerSettingsEmptyString:
+    """Ensure empty-string env vars don't crash Settings init.
+
+    Root cause of the crash-loop: docker-compose passes
+    ``SCHEDULER_MAX_PAGES=''`` when no value is set, and Pydantic
+    cannot parse ``''`` into ``int | None``.
+    """
+
+    def test_empty_scheduler_max_pages_becomes_none(self):
+        """SCHEDULER_MAX_PAGES='' should be treated as None (unset)."""
+        from app.core.config import Settings
+
+        s = Settings(
+            _env_file=None,
+            SCHEDULER_MAX_PAGES="",
+        )
+        assert s.SCHEDULER_MAX_PAGES is None
+
+    def test_explicit_scheduler_max_pages_int_applied(self):
+        """A valid integer value is still honoured."""
+        from app.core.config import Settings
+
+        s = Settings(
+            _env_file=None,
+            SCHEDULER_MAX_PAGES="7",
+        )
+        assert s.SCHEDULER_MAX_PAGES == 7
+
+    def test_empty_scheduler_cron_hour_uses_default(self):
+        """SCHEDULER_CRON_HOUR='' should fall back to default (3)."""
+        from app.core.config import Settings
+
+        s = Settings(
+            _env_file=None,
+            SCHEDULER_CRON_HOUR="",
+        )
+        assert s.SCHEDULER_CRON_HOUR == 3
+
+    def test_empty_scheduler_misfire_grace_time_uses_default(self):
+        """SCHEDULER_MISFIRE_GRACE_TIME='' should fall back to default (3600)."""
+        from app.core.config import Settings
+
+        s = Settings(
+            _env_file=None,
+            SCHEDULER_MISFIRE_GRACE_TIME="",
+        )
+        assert s.SCHEDULER_MISFIRE_GRACE_TIME == 3600
