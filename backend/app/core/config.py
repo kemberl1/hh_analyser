@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     API_KEY: str = ""
     LLM_BASE_URL: str = "https://api-copilot.x5.ru/aigw/v1/"
     LLM_MODEL: str = "x5-airun-medium"
+    LLM_ENABLED: bool = True
+    # Optional custom CA bundle (PEM) for the LLM endpoint TLS chain.
+    # X5 CoPilot is fronted by an internal X5 corporate CA (sre-vault.x5.ru)
+    # that is NOT part of the public certifi bundle; point this at a PEM
+    # containing that chain to keep TLS verification ON. Empty → default certifi.
+    LLM_CA_BUNDLE: str = ""
+    LLM_TIMEOUT: int = 60  # seconds
+    LLM_MAX_RETRIES: int = 3
+    LLM_CACHE_TTL: int = 3600  # seconds (1 hour)
+    LLM_MAX_TOKENS: int = 2048
+    LLM_TEMPERATURE: float = 0.4
 
     # --- Scheduler ---
     SCHEDULER_CRON_HOUR: int = 3

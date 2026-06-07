@@ -45,8 +45,12 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       CORS_ORIGINS: ${CORS_ORIGINS:-["http://localhost:5173","http://localhost:3000","http://localhost:80"]}
       API_KEY: ${API_KEY:-}
+      LLM_ENABLED: ${LLM_ENABLED:-true}
       LLM_BASE_URL: ${LLM_BASE_URL:-https://api-copilot.x5.ru/aigw/v1/}
       LLM_MODEL: ${LLM_MODEL:-x5-airun-medium}
+      # X5 CoPilot is fronted by an internal X5 CA (sre-vault.x5.ru) absent
+      # from the public certifi bundle; baked into the image at /app/certs.
+      LLM_CA_BUNDLE: ${LLM_CA_BUNDLE_CONTAINER:-/app/certs/x5_root_ca.pem}
     depends_on:
       migrations:
         condition: service_completed_successfully

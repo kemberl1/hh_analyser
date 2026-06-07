@@ -3,6 +3,7 @@ import { CooccurrenceWidget } from "@/components/widgets/CooccurrenceWidget";
 import { DemandWidget } from "@/components/widgets/DemandWidget";
 import { DistributionWidget } from "@/components/widgets/DistributionWidget";
 import { EmployersWidget } from "@/components/widgets/EmployersWidget";
+import { MarketInsightWidget } from "@/components/widgets/MarketInsightWidget";
 import { OverviewKPI } from "@/components/widgets/OverviewKPI";
 import { SalaryTimeseriesWidget } from "@/components/widgets/SalaryTimeseriesWidget";
 import { SalaryWidget } from "@/components/widgets/SalaryWidget";
@@ -17,6 +18,11 @@ export function Dashboard() {
         {/* KPI cards row */}
         <section>
           <OverviewKPI />
+        </section>
+
+        {/* AI Market Insight — full width (Phase 6) */}
+        <section>
+          <MarketInsightWidget />
         </section>
 
         {/* Salary + Timeseries row */}

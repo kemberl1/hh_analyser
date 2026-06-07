@@ -200,3 +200,29 @@ export interface IngestionStatusResponse {
   last_run: IngestionLastRun | null;
   data_freshness_hours: number | null;
 }
+
+// ===== /insights/market (Phase 6) =====
+
+export interface InsightMeta {
+  period?: string;
+  grade?: string;
+  model?: string | null;
+  generated_at?: string | null;
+  cached?: boolean;
+  llm_enabled?: boolean;
+}
+
+export interface InsightBasedOn {
+  sample_size: number;
+}
+
+export interface InsightData {
+  summary: string;
+  highlights: string[];
+  based_on: InsightBasedOn;
+}
+
+export interface MarketInsightResponse {
+  meta: InsightMeta;
+  data: InsightData;
+}

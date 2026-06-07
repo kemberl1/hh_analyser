@@ -1,14 +1,15 @@
 import { useQuery } from "@tanstack/react-query";
 import {
-    fetchCooccurrence,
-    fetchDemand,
-    fetchDistribution,
-    fetchEmployers,
-    fetchIngestionStatus,
-    fetchOverview,
-    fetchSalary,
-    fetchSalaryTimeseries,
-    fetchSkills,
+  fetchCooccurrence,
+  fetchDemand,
+  fetchDistribution,
+  fetchEmployers,
+  fetchIngestionStatus,
+  fetchMarketInsight,
+  fetchOverview,
+  fetchSalary,
+  fetchSalaryTimeseries,
+  fetchSkills,
 } from "./client";
 import type { DistributionBy, MetricFilters } from "./types";
 
@@ -28,6 +29,8 @@ const keys = {
   distribution: (f: MetricFilters, by: DistributionBy) =>
     ["metrics", "distribution", by, f] as const,
   ingestionStatus: () => ["ingestion", "status"] as const,
+  marketInsight: (f: MetricFilters) =>
+    ["insights", "market", f] as const,
 };
 
 export function useOverview(filters: MetricFilters) {
@@ -100,5 +103,14 @@ export function useIngestionStatus() {
     queryFn: fetchIngestionStatus,
     staleTime: 30_000,
     refetchInterval: 60_000,
+  });
+}
+
+export function useMarketInsight(filters: MetricFilters) {
+  return useQuery({
+    queryKey: keys.marketInsight(filters),
+    queryFn: () => fetchMarketInsight(filters),
+    staleTime: 300_000, // 5 min — insight is cached server-side too
+    retry: 1, // only 1 retry (server already handles LLM retries)
   });
 }

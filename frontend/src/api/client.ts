@@ -6,6 +6,7 @@ import type {
   DistributionData,
   EmployersData,
   IngestionStatusResponse,
+  MarketInsightResponse,
   MetricFilters,
   OverviewData,
   SalaryData,
@@ -118,4 +119,12 @@ export function fetchDistribution(
 
 export function fetchIngestionStatus(): Promise<IngestionStatusResponse> {
   return fetchJson(`${BASE}/ingestion/status`);
+}
+
+// ===== Phase 6: Market Insights =====
+
+export function fetchMarketInsight(
+  filters: MetricFilters
+): Promise<MarketInsightResponse> {
+  return fetchJson(`${BASE}/insights/market${buildParams(filters)}`);
 }
