@@ -1,6 +1,7 @@
 """Scheduler jobs — async job wrappers for APScheduler.
 
 Phase 3: daily ingestion job that calls the existing ingestion pipeline.
+Phase 4: snapshot rebuild after ingestion.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ async def _run_daily_ingestion() -> dict:
     - Logs start/finish/duration/counters via structlog.
     - Exceptions are caught, logged, and recorded in ingestion_runs (status=failed).
     - Never raises — the scheduler process stays alive.
+    - Phase 4: After successful ingestion, rebuilds metric snapshots.
 
     Returns:
         Summary dict from the ingestion pipeline, or error dict.
@@ -56,6 +58,10 @@ async def _run_daily_ingestion() -> dict:
 
                 summary = await run_ingestion(session, max_pages=max_pages)
 
+            # Phase 4: Rebuild metric snapshots after successful ingestion
+            if summary.get("status") in ("success", "partial"):
+                await _rebuild_snapshots()
+
             elapsed = time.monotonic() - t0
             logger.info(
                 "ingestion_job_finished",
@@ -74,6 +80,34 @@ async def _run_daily_ingestion() -> dict:
             # when source_fetch_failed. For truly unexpected errors (e.g. DB down),
             # we log here but do NOT re-raise — scheduler must stay alive.
             return {"status": "failed", "error": "unexpected_exception"}
+
+
+async def _rebuild_snapshots() -> None:
+    """Rebuild all metric snapshots (Phase 4).
+
+    Runs in a separate session to keep snapshot build isolated from ingestion.
+    Errors are logged but never propagated — dashboard data may be stale
+    but the scheduler process stays alive.
+    """
+    from app.services.snapshot_builder import build_snapshots
+
+    logger.info("snapshot_rebuild_triggered")
+    t0 = time.monotonic()
+    try:
+        async with async_session_factory() as session:
+            result = await build_snapshots(session)
+        elapsed = time.monotonic() - t0
+        logger.info(
+            "snapshot_rebuild_finished",
+            duration_s=round(elapsed, 2),
+            **result,
+        )
+    except Exception:
+        elapsed = time.monotonic() - t0
+        logger.exception(
+            "snapshot_rebuild_failed",
+            duration_s=round(elapsed, 2),
+        )
 
 
 def daily_ingestion_job() -> None:

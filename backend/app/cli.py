@@ -1,8 +1,9 @@
-"""CLI entry point for Phase 2 — manual ingestion and seed commands.
+"""CLI entry point — manual ingestion, seed, and snapshot rebuild commands.
 
 Usage:
     python -m app.cli ingest [--max-pages N]
     python -m app.cli seed
+    python -m app.cli rebuild-snapshots
 """
 
 from __future__ import annotations
@@ -47,8 +48,22 @@ async def cmd_seed() -> None:
     print(f"Seeded {count} relevance terms.")
 
 
+async def cmd_rebuild_snapshots() -> None:
+    """Rebuild all precomputed metric snapshots (Phase 4)."""
+    from app.db.session import async_session_factory
+    from app.services.snapshot_builder import build_snapshots
+
+    print("Rebuilding metric snapshots...")
+    async with async_session_factory() as session:
+        result = await build_snapshots(session)
+
+    print("\n=== Snapshot Rebuild Summary ===")
+    for k, v in result.items():
+        print(f"  {k}: {v}")
+
+
 def main() -> None:
-    parser = argparse.ArgumentParser(description="HH Analyser CLI (Phase 2)")
+    parser = argparse.ArgumentParser(description="HH Analyser CLI")
     subparsers = parser.add_subparsers(
         dest="command", help="Available commands")
 
@@ -63,12 +78,18 @@ def main() -> None:
     # seed
     subparsers.add_parser("seed", help="Seed reference data (relevance_terms)")
 
+    # rebuild-snapshots (Phase 4)
+    subparsers.add_parser(
+        "rebuild-snapshots", help="Rebuild precomputed metric snapshots")
+
     args = parser.parse_args()
 
     if args.command == "ingest":
         asyncio.run(cmd_ingest(max_pages=args.max_pages))
     elif args.command == "seed":
         asyncio.run(cmd_seed())
+    elif args.command == "rebuild-snapshots":
+        asyncio.run(cmd_rebuild_snapshots())
     else:
         parser.print_help()
         sys.exit(1)
