@@ -287,11 +287,25 @@ erDiagram
 | `filtered_count` | `int` | DEFAULT 0 | Отброшено как нерелевантные Relevance Filter (FR-45) |
 | `api_fallback_count` | `int` | DEFAULT 0 | Сколько раз использовался API-фолбэк `api.hh.ru` (вместо HTML primary) |
 | `captcha_block_count` | `int` | DEFAULT 0 | Сколько раз обнаружена капча/блокировка при HTML-краулинге (FR-39) |
-| `meta` | `jsonb` | NULL | Доп. детали (фильтры, версии) |
+| `meta` | `jsonb` | NULL | Доп. детали (фильтры, версии, **тип прогона** — см. ниже) |
 
 Обеспечивает наблюдаемость (NFR-18, NFR-19) и статус-эндпоинт (FR-25).
 
 > Поле `html_fallback_count` из Phase 0 переосмыслено: т.к. HTML — primary, отдельно считаются `api_fallback_count` (использование API-фолбэка) и `captcha_block_count` (блокировки при краулинге).
+
+#### Различение типов прогона через `meta` (Phase 8)
+
+Тип прогона (ежедневный CRON или backfill) хранится **в поле `meta` (JSONB)**, а не в отдельных колонках. Backfill-прогон записывает:
+
+```json
+{
+  "type": "backfill",
+  "source": "html",
+  "days_back": 30
+}
+```
+
+Обычный CRON-прогон может не содержать `meta.type` или содержать `"type": "scheduled"`. Счётчики (`created_count`, `updated_count`, `filtered_count`, `error_count`, `captcha_block_count`) одинаковы для обоих типов — различие только через `meta`. Эндпоинт `GET /api/v1/ingestion/status` возвращает последний прогон любого типа; тип можно определить по полю `meta` в ответе.
 
 ### 2.10. `snapshots` — предрассчитанные агрегации
 

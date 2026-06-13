@@ -2,7 +2,7 @@
 
 > Диаграммы — в Mermaid. Внутри узлов диаграмм не используются кавычки и круглые скобки.
 >
-> **Статус:** финальная архитектура реализованного MVP (фазы 0–7). Все компоненты — parser (HTML primary), scheduler (APScheduler), relevance filter, normalizer, aggregation + snapshots, API, LLM-adapter (с CA-bundle), resume-analyzer, frontend — реализованы.
+> **Статус:** финальная архитектура (фазы 0–8). Все компоненты — parser (HTML primary), **backfill** (Phase 8), scheduler (APScheduler, стабилен), relevance filter, normalizer, aggregation + snapshots, API, LLM-adapter (с CA-bundle), resume-analyzer, frontend — реализованы. 227 бэкенд-тестов зелёные.
 
 ---
 
@@ -72,14 +72,58 @@ flowchart TB
 - Ведёт журнал прогонов `ingestion_runs`.
 - Разделяет «факт вакансии» и связи (skills, employer, salary).
 
+### 2.3b. Backfill — массовое первичное наполнение (Phase 8 — реализовано)
+
+- **Назначение:** единоразово загрузить ВСЕ доступные сейчас по поиску hh.ru активные Frontend-вакансии за заданный период (`--days-back N`). После backfill ежедневный CRON (Phase 3) инкрементально докидывает новые.
+- **Источник = HTML** (`HtmlVacancySource`, как и основной ingestion). API — опциональный путь за флагом `HH_API_FALLBACK_ENABLED`.
+- **CLI-команда:** `python -m app.cli backfill --days-back N` (сервис [`backfill.py`](../backend/app/services/backfill.py)).
+
+#### Обход лимита hh.ru ~2000 результатов — рекурсивная сегментация по датам
+
+hh.ru отдаёт через поиск максимум ~2000 результатов на запрос. Для полного сбора применяется рекурсивная сегментация:
+
+1. Probe-запрос на сегмент даты → считывание `found` (счётчик найденных) из HTML через CSS-селектор `h1[data-qa='title']`.
+2. Если `found >= ~1900` **и** временное окно > 1 дня — интервал делится пополам, каждая половина обрабатывается рекурсивно.
+3. Иначе — постраничный обход всех страниц сегмента, сбор `hh_vacancy_id` и URL.
+4. Глобальный дедуп по `hh_vacancy_id` между сегментами (set на уровне прогона).
+
+> **Нюанс HTML-поиска hh.ru:** фильтр по датам принимает **только формат `DD.MM.YYYY`** (ISO `YYYY-MM-DD` игнорируется). Минимальная гранулярность сегмента — 1 день; при >2000 вакансий за один день часть недостижима из-за cap hh.ru (для текущих объёмов Frontend по РФ не проблема).
+
+#### Переиспользование пайплайна
+
+Backfill переиспользует тот же пайплайн, что и ежедневный ingestion: **Relevance Filter** → **Normalizer** → **upsert** (`published_at` = дата публикации, не перезаписывается). Нерелевантные вакансии не попадают в БД.
+
+#### Resumability и наблюдаемость
+
+- **Батч-коммиты по 50** — промежуточные данные сохраняются; при сбое/капче уже обработанное не теряется.
+- Вежливый краулинг: rate-limiting (aiolimiter), задержки, ретраи (tenacity).
+- Structlog-прогресс; фиксация в `ingestion_runs` (`meta.type = backfill`, `meta.source = html`, счётчики `created`/`updated`/`filtered`/`errors`/`captcha_blocks`).
+- Настройки: `HH_BACKFILL_ITEMS_PER_PAGE` (100), `HH_BACKFILL_RESULT_CAP` (2000), CSS-селекторы счётчика результатов в `HTML_SELECTORS`.
+
+```mermaid
+flowchart TB
+    CLI[CLI backfill days-back N] --> PROBE{Probe сегмент получить found из HTML}
+    PROBE -->|found >= 1900 и окно > 1 дня| SPLIT[Разделить интервал пополам рекурсивно]
+    SPLIT --> PROBE
+    PROBE -->|found в пределах лимита| PAGE[Постранично собрать hh_vacancy_id]
+    PAGE --> DEDUP[Глобальный дедуп между сегментами]
+    DEDUP --> FETCH[Загрузить detail-страницу каждой вакансии HTML]
+    FETCH --> RF2[Relevance Filter]
+    RF2 -->|релевантно| NRM2[Normalizer]
+    NRM2 --> UPS[Upsert по hh_vacancy_id батч-коммит по 50]
+    RF2 -.->|мусор| SKIP2[Счётчик filtered]
+    UPS --> RUN[ingestion_runs meta type backfill source html]
+```
+
 ### 2.4. Scheduler (планировщик)
 
 - Запуск ежедневно по CRON. Реализация — **APScheduler `AsyncIOScheduler`** внутри отдельного worker-процесса (`app.scheduler.main`), cron-триггер (дефолт 03:00 `Europe/Moscow`).
+- **Запуск event-loop:** entrypoint вызывает `asyncio.run(async main)`, внутри которого `scheduler.start()` работает на уже запущенном loop. **Keep-alive:** `asyncio.Event().wait()` удерживает процесс. **Graceful shutdown:** обработчики `SIGTERM`/`SIGINT` устанавливают событие → scheduler корректно останавливается. Этим исправлен ранний баг «`RuntimeError: no running event loop`» (хотфикс #2).
 - **Overlap-protection:** `max_instances=1`, `coalesce=True`, `misfire_grace_time` + asyncio-lock — параллельный/наложившийся прогон не запускается.
 - Режим `--run-now` — немедленный разовый прогон и выход (для отладки/бэкфилла).
 - Оркестрирует пайплайн: parse → **relevance filter** → normalize → persist → **aggregate (пересчёт snapshots после ingestion)**.
 - Учёт по `published_at`; при upsert `published_at` **не перезаписывается**.
-- Настройки: `SCHEDULER_CRON_HOUR/MINUTE`, `SCHEDULER_TIMEZONE`, `SCHEDULER_MAX_PAGES` (Optional, фолбэк на `HH_MAX_PAGES`), `SCHEDULER_MISFIRE_GRACE_TIME`. Пустые строки этих настроек безопасно трактуются валидаторами (Docker Compose передаёт `''` при отсутствии значения) — хотфикс Phase 3.
+- Настройки: `SCHEDULER_CRON_HOUR/MINUTE`, `SCHEDULER_TIMEZONE`, `SCHEDULER_MAX_PAGES` (Optional, фолбэк на `HH_MAX_PAGES`), `SCHEDULER_MISFIRE_GRACE_TIME`. Пустые строки этих настроек безопасно трактуются pydantic field-валидаторами (Docker Compose передаёт `''` при отсутствии значения) — хотфикс #1. Контейнер scheduler стабилен (Up), CRON-докид и `--run-now` работают.
 
 ### 2.5. Aggregation (агрегации/метрики)
 
@@ -267,3 +311,5 @@ flowchart TB
 | AD-10 | Кастомный `LLM_CA_BUNDLE` (PEM) при включённой TLS-верификации | X5 CoPilot за внутренним корпоративным CA, отсутствующим в `certifi`; доверие к цепочке без отключения проверки TLS (NFR-32) |
 | AD-11 | Санитизация PII до вызова LLM; резюме не персистится | Приватность данных резюме; ФИО вырезается в любом порядке слов (NFR-14, NFR-16) |
 | AD-12 | Graceful-degradation LLM-фич через фабрику с `LLM_ENABLED` | Дашборд и анализатор резюме работают даже при отключённом/сбойном LLM |
+| AD-13 | Рекурсивная сегментация по датам для backfill | Обход лимита hh.ru ~2000 результатов на запрос; полный сбор активного пула вакансий (FR-48, FR-49) |
+| AD-14 | Scheduler entrypoint через `asyncio.run` + `Event.wait` + signal handlers | Корректный запуск `AsyncIOScheduler` внутри работающего loop; graceful shutdown по SIGTERM/SIGINT; устранён crash-loop контейнера |

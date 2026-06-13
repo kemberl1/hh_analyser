@@ -110,6 +110,13 @@ class Settings(BaseSettings):
     # API fallback settings
     HH_API_BASE_URL: str = "https://api.hh.ru"
 
+    # ======== Phase 8: Backfill (segmented HTML search) ========
+    # Items per search page for backfill HTML crawling (hh.ru supports up to 100).
+    HH_BACKFILL_ITEMS_PER_PAGE: int = 100
+    # hh.ru only allows browsing the first ~2000 results of any search; segment
+    # splitting keeps each segment below this so pagination never truncates.
+    HH_BACKFILL_RESULT_CAP: int = 2000
+
     # ======== Phase 2: HTML CSS Selectors (FR-37 — configurable) ========
     HTML_SELECTORS: Dict[str, str] = {
         # Search page selectors
@@ -117,6 +124,9 @@ class Settings(BaseSettings):
         "vacancy_link": "a.serp-item__title",
         "vacancy_link_alt": "a[data-qa='serp-item__title']",
         "next_page": "a[data-qa='pager-next']",
+        # Search results counter ("Найдено N вакансий …") — backfill segmentation
+        "results_count": "h1[data-qa='title']",
+        "results_count_alt": "[data-qa='vacancies-search-header'] h1",
         # Vacancy detail page selectors
         "title": "h1[data-qa='vacancy-title']",
         "salary": "[data-qa='vacancy-salary']",

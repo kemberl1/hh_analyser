@@ -66,6 +66,42 @@ async def _run_now_and_exit() -> None:
     logger.info("scheduler_run_now_complete", **summary)
 
 
+async def _run_cron_scheduler() -> None:
+    """Start the cron scheduler inside a running asyncio event loop.
+
+    ``AsyncIOScheduler.start()`` requires an already-running event loop
+    (it binds to ``asyncio.get_running_loop()``).  This coroutine is
+    executed via ``asyncio.run()`` so the loop is guaranteed to be active.
+    """
+    scheduler = build_scheduler()
+
+    stop_event = asyncio.Event()
+    loop = asyncio.get_running_loop()
+
+    def _shutdown(signum: int) -> None:
+        logger.info("scheduler_shutdown_signal", signal=signum)
+        stop_event.set()
+
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, _shutdown, sig)
+
+    logger.info(
+        "scheduler_starting",
+        cron=f"{settings.SCHEDULER_CRON_HOUR:02d}:{settings.SCHEDULER_CRON_MINUTE:02d}",
+        timezone=settings.SCHEDULER_TIMEZONE,
+        max_pages=settings.SCHEDULER_MAX_PAGES or settings.HH_MAX_PAGES,
+        misfire_grace_time=settings.SCHEDULER_MISFIRE_GRACE_TIME,
+    )
+
+    scheduler.start()
+
+    try:
+        await stop_event.wait()
+    finally:
+        scheduler.shutdown(wait=False)
+        logger.info("scheduler_stopped")
+
+
 def main() -> None:
     """Entry point: parse args → either --run-now or start the cron scheduler."""
     parser = argparse.ArgumentParser(
@@ -82,38 +118,7 @@ def main() -> None:
         asyncio.run(_run_now_and_exit())
         sys.exit(0)
 
-    # --- Normal cron mode ---
-    scheduler = build_scheduler()
-
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-
-    def _shutdown(signum: int, frame: object) -> None:
-        logger.info("scheduler_shutdown_signal", signal=signum)
-        scheduler.shutdown(wait=False)
-        loop.stop()
-
-    signal.signal(signal.SIGTERM, _shutdown)
-    signal.signal(signal.SIGINT, _shutdown)
-
-    logger.info(
-        "scheduler_starting",
-        cron=f"{settings.SCHEDULER_CRON_HOUR:02d}:{settings.SCHEDULER_CRON_MINUTE:02d}",
-        timezone=settings.SCHEDULER_TIMEZONE,
-        max_pages=settings.SCHEDULER_MAX_PAGES or settings.HH_MAX_PAGES,
-        misfire_grace_time=settings.SCHEDULER_MISFIRE_GRACE_TIME,
-    )
-
-    scheduler.start()
-
-    try:
-        loop.run_forever()
-    except (KeyboardInterrupt, SystemExit):
-        pass
-    finally:
-        scheduler.shutdown(wait=False)
-        loop.close()
-        logger.info("scheduler_stopped")
+    asyncio.run(_run_cron_scheduler())
 
 
 if __name__ == "__main__":

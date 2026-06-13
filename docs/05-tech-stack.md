@@ -3,7 +3,7 @@
 > Утверждённые заказчиком решения **зафиксированы** и не меняются; ниже — уточнение конкретными библиотеками, версиями и обоснованием.
 > Принцип: использовать готовые проверенные библиотеки вместо самописных реализаций (для скорости разработки).
 >
-> **Статус:** финальный стек реализованного MVP. Pinned-версии — в [`backend/requirements.txt`](../backend/requirements.txt) и [`frontend/package.json`](../frontend/package.json).
+> **Статус:** финальный стек реализованного MVP + Phase 8 (Backfill). Pinned-версии — в [`backend/requirements.txt`](../backend/requirements.txt) и [`frontend/package.json`](../frontend/package.json).
 
 ---
 
@@ -49,9 +49,9 @@
 - **SQLAlchemy 2.x + Alembic** — зрелый ORM с типизацией 2.0-стиля; Alembic — стандарт миграций (NFR-27).
 - **psycopg v3** — современный драйвer PostgreSQL с поддержкой async и JSONB.
 - **httpx** — async HTTP; основной путь — краулинг HTML-страниц hh.ru (поиск + вакансии) с пагинацией; интегрируется с tenacity и aiolimiter. Тот же клиент используется для API-фолбэка `api.hh.ru`, когда он доступен (FR-3).
-- **selectolax** — очень быстрый HTML-парсер (lexbor) — **основной инструмент извлечения** данных из HTML hh.ru (FR-2); BeautifulSoup4 — для сложных/нестабильных участков вёрстки. CSS-селекторы выносятся в конфиг для устойчивости к изменению вёрстки (FR-37, NFR-11).
-- **tenacity** — retry с экспоненциальным backoff и jitter (NFR-5, NFR-31); капча/блокировка трактуется как сигнал к паузе, а не к агрессивным ретраям (FR-39). **aiolimiter** — token-bucket лимит RPS + задержки для вежливого краулинга (NFR-9).
-- **APScheduler** — планировщик внутри worker-процесса; альтернатива — системный cron, вызывающий CLI-команду. Рекомендация: APScheduler для MVP (проще в одном Docker-стеке), с возможностью перейти на cron/Celery beat при росте.
+- **selectolax** — очень быстрый HTML-парсер (lexbor) — **основной инструмент извлечения** данных из HTML hh.ru (FR-2); BeautifulSoup4 — для сложных/нестабильных участков вёрстки. CSS-селекторы выносятся в конфиг для устойчивости к изменению вёрстки (FR-37, NFR-11). В Phase 8 добавлены селекторы **счётчика результатов** поиска для backfill-сегментации: `results_count` = `h1[data-qa='title']`, `results_count_alt` = `[data-qa='vacancies-search-header'] h1`.
+- **tenacity** — retry с экспоненциальным backoff и jitter (NFR-5, NFR-31); капча/блокировка трактуется как сигнал к паузе, а не к агрессивным ретраям (FR-39). **aiolimiter** — token-bucket лимит RPS + задержки для вежливого краулинга (NFR-9). Используется и в ежедневном CRON, и в объёмном backfill (NFR-33).
+- **APScheduler** — планировщик внутри worker-процесса; entrypoint через `asyncio.run()` с keep-alive и graceful shutdown (SIGTERM/SIGINT). Альтернатива — системный cron, вызывающий CLI-команду. Рекомендация: APScheduler для MVP (проще в одном Docker-стеке), с возможностью перейти на cron/Celery beat при росте.
 - **numpy** — перцентили/медианы (M1); альтернатива — SQL `percentile_cont` на стороне PostgreSQL (используется для тяжёлых агрегаций).
 - **structlog** — JSON-логи с correlation-id (NFR-18).
 
@@ -75,6 +75,17 @@
 | `frontend` | node build → nginx | статика Vite |
 
 Конфигурация — через `.env` (NFR-22). Backend и scheduler используют один образ, разные entrypoint.
+
+### 4.1. Настройки Backfill (Phase 8)
+
+| Переменная / конфиг | Значение по умолчанию | Описание |
+|----------------------|-----------------------|----------|
+| `HH_BACKFILL_ITEMS_PER_PAGE` | `100` | Количество результатов на страницу поиска при backfill-краулинге (hh.ru поддерживает до 100). |
+| `HH_BACKFILL_RESULT_CAP` | `2000` | Лимит browsable-результатов hh.ru на запрос; используется для порога сегментации (~1900). |
+| `HTML_SELECTORS.results_count` | `h1[data-qa='title']` | CSS-селектор для извлечения счётчика найденных вакансий из HTML-страницы поиска (probe-запрос backfill). |
+| `HTML_SELECTORS.results_count_alt` | `[data-qa='vacancies-search-header'] h1` | Альтернативный CSS-селектор счётчика результатов. |
+
+> **Нюанс формата дат HTML-поиска hh.ru:** фильтр по датам в URL HTML-поиска hh.ru принимает **только формат `DD.MM.YYYY`** (параметры `date_from`, `date_to`). ISO-формат `YYYY-MM-DD` **игнорируется** (hh.ru не применяет фильтр, выдача не ограничивается). Минимальная гранулярность — 1 день; фильтрация по часам/минутам невозможна. Backfill-сервис форматирует даты в `DD.MM.YYYY` при формировании URL.
 
 ## 5. LLM-интеграция: X5 CoPilot API (Phase 6–7 — реализовано)
 

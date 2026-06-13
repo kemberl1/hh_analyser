@@ -3,6 +3,7 @@
 > Базовый префикс: `/api/v1`. Формат — JSON. Спецификация OpenAPI генерируется автоматически (FastAPI) на `/docs` и `/openapi.json`.
 >
 > **Статус:** реализовано. Фактически смонтированы: health, ingestion/status, 8 метрик-эндпоинтов, insights/market, 2 resume-эндпоинта. Метрики считаются **on-the-fly** (механизм snapshots готов, см. [`04-metrics.md`](04-metrics.md)).
+> **Backfill** — это **CLI-операция** (`python -m app.cli backfill --days-back N`), **не REST-эндпоинт**. REST API не менялся. Эндпоинт `ingestion/status` может вернуть backfill-прогон (различимый по `meta.type`, см. §2.2a).
 > **Нюанс конверта:** в `meta` поля `date_from`/`date_to` (а также `computed_at`) могут быть `null`, если диапазон не задан явно / нет данных.
 > **Не вошло в MVP:** списочные drill-down-эндпоинты (`/vacancies`, `/skills`, `/employers`) — см. §4.
 
@@ -100,6 +101,30 @@
 ```
 
 > Источник данных по умолчанию — HTML-парсинг (primary). `api_fallback_count` > 0 означает, что использовался фолбэк `api.hh.ru` (FR-3); `filtered_count` — число отсеянных нерелевантных вакансий (Relevance Filtering, FR-45); `captcha_block_count` — срабатывания капчи/блокировок (FR-39).
+
+#### 2.2a. Backfill-прогон в `ingestion/status`
+
+Если последний прогон — backfill, ответ `GET /api/v1/ingestion/status` будет выглядеть аналогично, но поле `meta` в `ingestion_runs` содержит:
+
+```json
+{ "type": "backfill", "source": "html", "days_back": 30 }
+```
+
+REST-контракт не меняется — `meta` передаётся как есть. Клиент может различать тип прогона по `last_run.meta.type`.
+
+---
+
+## 2.3. CLI-операции (не REST)
+
+> Backfill и другие операции доступны через CLI-команды внутри backend-окружения (не REST-эндпоинты).
+
+| Команда | Назначение |
+|---------|------------|
+| `python -m app.cli ingest [--max-pages N]` | Запуск пайплайна сбора (HTML primary) |
+| `python -m app.cli backfill --days-back N` | **Массовое первичное наполнение:** полный сбор активных Frontend-вакансий за N дней с рекурсивной сегментацией по датам (Phase 8). Источник — HTML; при `HH_API_FALLBACK_ENABLED` — API. |
+| `python -m app.cli seed` | Сид словарей `relevance_terms` |
+| `python -m app.cli rebuild-snapshots` | Пересчёт предрассчитанных метрик (snapshots) |
+| `python -m app.scheduler.main --run-now` | Разовый прогон scheduler (без cron-цикла) |
 
 ---
 

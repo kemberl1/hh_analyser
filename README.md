@@ -57,7 +57,7 @@ docker compose up --build
 - **db** — PostgreSQL 16 на порту `5432`
 - **migrations** — Alembic `upgrade head` (выполнится и завершится)
 - **api** — FastAPI на `http://localhost:8000`
-- **scheduler** — APScheduler worker (heartbeat каждые 60с)
+- **scheduler** — APScheduler worker (heartbeat каждые 60с, контейнер стабилен)
 - **frontend** — Vite dev server на `http://localhost:5173`
 
 ### 3. Проверьте работоспособность
@@ -73,11 +73,25 @@ open http://localhost:5173
 
 > **Важно:** Docker-образы бейкают код на build-time. После изменений в коде перед запуском нужна пересборка: `docker compose build`.
 
-### 4. Сбор данных и метрики (CLI)
+### 4. Первичное наполнение (backfill) — разовая операция
+
+```bash
+# Рекомендуется выполнить один раз после первого запуска стека.
+# Массовый сбор ВСЕХ активных Frontend-вакансий за последние 30 дней:
+docker compose run --rm api python -m app.cli backfill --days-back 30
+
+# После backfill — пересчитать снапшоты метрик:
+docker compose run --rm api python -m app.cli rebuild-snapshots
+```
+
+> **Backfill** загружает все доступные по поиску hh.ru вакансии, обходя лимит ~2000 результатов через рекурсивную сегментацию по датам (HTML-источник). После первичного наполнения ежедневный CRON (scheduler) автоматически докидывает новые. Подробности — в [`docs/02-architecture.md`](docs/02-architecture.md) §2.3b и [`docs/07-roadmap.md`](docs/07-roadmap.md) Phase 8.
+
+### 5. Сбор данных и метрики (CLI)
 
 ```bash
 # Внутри backend-образа / окружения:
 python -m app.cli ingest [--max-pages N]   # запуск пайплайна сбора (HTML primary)
+python -m app.cli backfill --days-back N    # массовое первичное наполнение (сегментация по датам, HTML)
 python -m app.cli seed                      # сид словарей relevance_terms
 python -m app.cli rebuild-snapshots         # пересчёт предрассчитанных метрик (snapshots)
 python -m app.scheduler.main --run-now      # разовый прогон scheduler (без cron-цикла)
@@ -108,6 +122,7 @@ python -m app.scheduler.main --run-now  # разовый прогон и вых�
 
 # CLI: сбор данных и метрики
 python -m app.cli ingest [--max-pages N]
+python -m app.cli backfill --days-back N    # массовое первичное наполнение
 python -m app.cli seed
 python -m app.cli rebuild-snapshots
 ```
@@ -148,6 +163,8 @@ pytest tests/ -v
 | `HH_SOURCE` | Источник сбора: `html` (primary) / `api` | `html` |
 | `HH_API_FALLBACK_ENABLED` | Включение фолбэка `api.hh.ru` | `false` |
 | `HH_MAX_PAGES` | Лимит страниц поиска при сборе | `20` |
+| `HH_BACKFILL_ITEMS_PER_PAGE` | Результатов на страницу при backfill-краулинге | `100` |
+| `HH_BACKFILL_RESULT_CAP` | Лимит browsable-результатов hh.ru (порог сегментации) | `2000` |
 | `SCHEDULER_CRON_HOUR` | Час запуска CRON | `3` |
 | `SCHEDULER_CRON_MINUTE` | Минута запуска CRON | `0` |
 | `SCHEDULER_TIMEZONE` | Таймзона планировщика | `Europe/Moscow` |
@@ -156,6 +173,8 @@ pytest tests/ -v
 | `VITE_API_URL` | URL бэкенда для фронта | `http://localhost:8000` |
 
 > **TLS / LLM_CA_BUNDLE:** X5 CoPilot находится за внутренним корпоративным CA, отсутствующим в публичном `certifi`. При заданном `LLM_CA_BUNDLE` используется кастомный httpx-клиент с этим CA — TLS-верификация **остаётся включённой**. Сертификат в `backend/certs/x5_root_ca.pem` (в `.gitignore`; в проде — секреты K8s). Пустые строки scheduler-переменных безопасно трактуются валидаторами.
+>
+> **Scheduler:** контейнер scheduler теперь стабилен (оба хотфикса применены: пустые env-строки + запуск через `asyncio.run` с graceful shutdown). CRON-докид работает; режим `--run-now` отрабатывает корректно.
 
 ## 🔌 Реализованные API-эндпоинты
 
@@ -169,7 +188,7 @@ pytest tests/ -v
 
 ## 📚 Документация
 
-> **Статус: MVP реализован (все фазы 0–7).** Спецификация синхронизирована с реализацией.
+> **Статус: MVP + Phase 8 реализованы (все фазы 0–8).** Спецификация синхронизирована с реализацией.
 
 Спецификация проекта — в папке [`docs/`](docs/):
 - [Обзор](docs/00-overview.md)
